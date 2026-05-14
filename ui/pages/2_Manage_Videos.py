@@ -26,9 +26,7 @@ if not SEARCH_ENDPOINT or not SEARCH_KEY:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Process any pending delete BEFORE rendering — this is the correct Streamlit
-# pattern. The button sets pending_delete + reruns; on the next pass this block
-# runs at the top, deletes, clears the flag, then the list renders without it.
+# Process any pending delete BEFORE rendering
 # ---------------------------------------------------------------------------
 if st.session_state.get('pending_delete'):
     vid_to_delete = st.session_state.pending_delete
@@ -63,7 +61,7 @@ if st.button("📊 Analyze URL Data Coverage"):
 
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Videos", len(all_videos))
-        col2.metric("✅ With URL Data",   len(with_urls),
+        col2.metric("✅ With URL Data", len(with_urls),
                     f"{len(with_urls)/len(all_videos)*100:.1f}%" if all_videos else "0%")
         col3.metric("⚠️ Missing URL Data", len(without_urls),
                     f"{len(without_urls)/len(all_videos)*100:.1f}%" if all_videos else "0%")
@@ -75,7 +73,10 @@ if st.button("📊 Analyze URL Data Coverage"):
             type_counts[t] = type_counts.get(t, 0) + 1
         cols = st.columns(max(len(type_counts), 1))
         for i, (stype, count) in enumerate(sorted(type_counts.items())):
-            icon = "🎬" if stype == "youtube" else "📄" if stype == "direct" else "📁" if stype == "upload" else "❓"
+            icon = ("🎬" if stype == "youtube" else
+                    "📦" if stype == "box"     else
+                    "📄" if stype == "direct"  else
+                    "📁" if stype == "upload"  else "❓")
             cols[i % len(cols)].metric(f"{icon} {stype}", count)
 
         if without_urls:
@@ -95,7 +96,7 @@ with col1:
     filter_video_id = st.text_input("Filter by Video ID (optional)")
 with col2:
     filter_options = ["All", "With URL Data Only", "Missing URL Data Only",
-                      "youtube", "direct", "upload", "unknown"]
+                      "youtube", "box", "direct", "upload", "unknown"]
     filter_source_type = st.selectbox("Filter by Source Type", options=filter_options)
 
 if st.button("🔍 Load Videos", type="primary"):
@@ -133,7 +134,6 @@ if st.button("🔍 Load Videos", type="primary"):
 if st.session_state.get('stored_videos_cache'):
     videos = st.session_state.stored_videos_cache
 
-    # Show delete-success / error banners
     if st.session_state.get('delete_success'):
         st.success("✅ Video deleted successfully")
         st.session_state.delete_success = False
@@ -141,17 +141,18 @@ if st.session_state.get('stored_videos_cache'):
         st.error(f"❌ Failed to delete: {st.session_state.delete_error}")
         st.session_state.delete_error = None
 
-    # Metrics row
+    # Metrics row — dynamic, shows every source type actually present
     st.markdown("---")
     type_counts = {}
     for v in videos:
         t = v.get('source_type') or 'unknown'
         type_counts[t] = type_counts.get(t, 0) + 1
-    cols = st.columns(4)
-    cols[0].metric("Total",   len(videos))
-    cols[1].metric("YouTube", type_counts.get('youtube', 0))
-    cols[2].metric("Direct",  type_counts.get('direct',  0))
-    cols[3].metric("Upload",  type_counts.get('upload',  0))
+
+    all_types = sorted(type_counts.keys())
+    cols = st.columns(max(len(all_types) + 1, 2))
+    cols[0].metric("Total", len(videos))
+    for i, stype in enumerate(all_types, 1):
+        cols[i % len(cols)].metric(stype.capitalize(), type_counts.get(stype, 0))
 
     st.markdown("---")
     st.subheader("Video List")
@@ -162,22 +163,27 @@ if st.session_state.get('stored_videos_cache'):
         stype = v.get('source_type') or 'unknown'
         videos_by_type.setdefault(stype, []).append(v)
 
-    for stype in ['youtube', 'direct', 'upload', 'unknown']:
+    # Known types first, then any unexpected ones
+    known_order = ['youtube', 'box', 'direct', 'upload', 'unknown']
+    other_types = [t for t in videos_by_type if t not in known_order]
+
+    for stype in known_order + other_types:
         if stype not in videos_by_type:
             continue
         type_videos = videos_by_type[stype]
         icon = ("🎬" if stype == "youtube" else
+                "📦" if stype == "box"     else
                 "📄" if stype == "direct"  else
                 "📁" if stype == "upload"  else "❓")
 
         with st.expander(
             f"{icon} {stype.upper()} ({len(type_videos)} videos)",
-            expanded=(stype == 'youtube')
+            expanded=(stype == 'box')
         ):
             for i, video in enumerate(type_videos, 1):
-                vid        = video.get('video_id', 'unknown')
-                src_url    = video.get('source_url', '')
-                processed  = video.get('processed_at', 'unknown')
+                vid         = video.get('video_id', 'unknown')
+                src_url     = video.get('source_url', '')
+                processed   = video.get('processed_at', 'unknown')
                 status_icon = "✅" if src_url else "⚠️"
 
                 col_info, col_btn = st.columns([5, 1])
@@ -208,9 +214,9 @@ if st.session_state.get('stored_videos_cache'):
     if st.button("📥 Export to CSV"):
         export_df = pd.DataFrame([
             {
-                'video_id':    v.get('video_id'),
-                'source_type': v.get('source_type') or 'unknown',
-                'source_url':  v.get('source_url', ''),
+                'video_id':     v.get('video_id'),
+                'source_type':  v.get('source_type') or 'unknown',
+                'source_url':   v.get('source_url', ''),
                 'has_url_data': bool(v.get('source_url')),
                 'processed_at': v.get('processed_at', 'unknown'),
             }
