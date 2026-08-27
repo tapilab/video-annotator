@@ -23,7 +23,7 @@ load_dotenv()
 
 __all__ = [
     "SEARCH_FN_URL",
-    "SEARCH_ENDPOINT", "SEARCH_KEY", "SEARCH_INDEX_NAME",
+    "SEARCH_ENDPOINT", "SEARCH_ADMIN_KEY", "SEARCH_INDEX_NAME",
     "AZURE_STORAGE_ACCOUNT", "AZURE_STORAGE_KEY", "PENDING_CONTAINER",
     "ms_to_ts", "ms_to_seconds", "detect_url_type",
     "debug_check_index_schema", "get_index_schema",
@@ -38,7 +38,7 @@ __all__ = [
 SEARCH_FN_URL = os.environ.get("SEARCH_FN_URL", "")
 
 SEARCH_ENDPOINT = os.environ.get("SEARCH_ENDPOINT")
-SEARCH_KEY = os.environ.get("SEARCH_KEY")
+SEARCH_ADMIN_KEY = os.environ.get("SEARCH_ADMIN_KEY")
 SEARCH_INDEX_NAME = os.environ.get("SEARCH_INDEX_NAME", "segments")
 
 AZURE_STORAGE_ACCOUNT = os.environ.get("AZURE_STORAGE_ACCOUNT", "storagevideoannotator")
@@ -94,10 +94,10 @@ def detect_url_type(url: str) -> str:
 # =============================================================================
 
 def debug_check_index_schema():
-    if not SEARCH_ENDPOINT or not SEARCH_KEY or not SEARCH_INDEX_NAME:
+    if not SEARCH_ENDPOINT or not SEARCH_ADMIN_KEY or not SEARCH_INDEX_NAME:
         return "Search not configured"
     url = f"{SEARCH_ENDPOINT}/indexes/{SEARCH_INDEX_NAME}?api-version=2024-07-01"
-    headers = {"api-key": SEARCH_KEY}
+    headers = {"api-key": SEARCH_ADMIN_KEY}
     try:
         r = requests.get(url, headers=headers, timeout=30)
         if r.status_code == 200:
@@ -144,7 +144,7 @@ def get_index_schema():
 # =============================================================================
 
 def get_source_url_for_video(video_id: str) -> Optional[str]:
-    if not SEARCH_ENDPOINT or not SEARCH_KEY or not SEARCH_INDEX_NAME:
+    if not SEARCH_ENDPOINT or not SEARCH_ADMIN_KEY or not SEARCH_INDEX_NAME:
         return None
     if not video_id or not isinstance(video_id, str):
         return None
@@ -152,7 +152,7 @@ def get_source_url_for_video(video_id: str) -> Optional[str]:
         f"{SEARCH_ENDPOINT}/indexes/{SEARCH_INDEX_NAME}"
         f"/docs/search?api-version=2024-07-01"
     )
-    headers = {"api-key": SEARCH_KEY, "Content-Type": "application/json"}
+    headers = {"api-key": SEARCH_ADMIN_KEY, "Content-Type": "application/json"}
     escaped_id = video_id.replace("'", "''")
     payload = {
         "search": "*",
@@ -179,13 +179,13 @@ def get_stored_videos(
     video_id: str = None, source_type: str = None,
     include_missing: bool = True, limit: int = 1000
 ) -> List[Dict]:
-    if not SEARCH_ENDPOINT or not SEARCH_KEY:
+    if not SEARCH_ENDPOINT or not SEARCH_ADMIN_KEY:
         return []
     url = (
         f"{SEARCH_ENDPOINT}/indexes/{SEARCH_INDEX_NAME}"
         f"/docs/search?api-version=2024-07-01"
     )
-    headers = {"api-key": SEARCH_KEY, "Content-Type": "application/json"}
+    headers = {"api-key": SEARCH_ADMIN_KEY, "Content-Type": "application/json"}
     try:
         schema = get_index_schema()
         available_fields = {f['name'] for f in schema.get('fields', [])}
@@ -249,7 +249,7 @@ def get_stored_videos(
 
 
 def delete_video_by_id(video_id: str) -> bool:
-    if not SEARCH_ENDPOINT or not SEARCH_KEY:
+    if not SEARCH_ENDPOINT or not SEARCH_ADMIN_KEY:
         return False
     if not video_id or not isinstance(video_id, str):
         return False
@@ -262,7 +262,7 @@ def delete_video_by_id(video_id: str) -> bool:
         f"{SEARCH_ENDPOINT}/indexes/{SEARCH_INDEX_NAME}"
         f"/docs/search?api-version=2024-07-01"
     )
-    headers    = {"api-key": SEARCH_KEY, "Content-Type": "application/json"}
+    headers    = {"api-key": SEARCH_ADMIN_KEY, "Content-Type": "application/json"}
     escaped_id = video_id.replace("'", "''")
     payload = {
         "search": "*",

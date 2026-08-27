@@ -12,7 +12,7 @@ import time
 import requests
 from utils import (
     SEARCH_ENDPOINT,
-    SEARCH_KEY,
+    SEARCH_ADMIN_KEY,
     get_stored_videos,
     delete_video_by_id,
     get_pending_uploads,
@@ -27,7 +27,7 @@ st.title(APP_TITLE)
 st.subheader("📚 Manage Stored Videos")
 st.info("View, search, and manage all processed videos and their source URLs")
 
-if not SEARCH_ENDPOINT or not SEARCH_KEY:
+if not SEARCH_ENDPOINT or not SEARCH_ADMIN_KEY:
     st.error("Azure Search not configured. Cannot retrieve video list.")
     st.stop()
 

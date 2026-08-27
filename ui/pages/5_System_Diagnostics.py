@@ -7,7 +7,7 @@ sys.path.append("..")
 import os
 import streamlit as st
 from utils import (
-    SEARCH_KEY, AZURE_STORAGE_KEY, SEARCH_FN_URL,
+    SEARCH_ADMIN_KEY, AZURE_STORAGE_KEY, SEARCH_FN_URL,
     debug_check_index_schema
 )
 
@@ -24,7 +24,7 @@ st.info("Check system configuration and troubleshoot issues")
 st.subheader("Configuration Status")
 
 config_checks = {
-    "Azure Search (SEARCH_KEY)": bool(SEARCH_KEY),
+    "Azure Search (SEARCH_ADMIN_KEY)": bool(SEARCH_ADMIN_KEY),
     "Azure Storage (AZURE_STORAGE_KEY)": bool(AZURE_STORAGE_KEY),
     "Search Function (SEARCH_FN_URL)": bool(SEARCH_FN_URL),
     "Stage Media Function (STAGE_MEDIA_URL)": bool(STAGE_MEDIA_URL),
