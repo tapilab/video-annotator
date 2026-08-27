@@ -44,11 +44,6 @@ if st.button("🔍 Check Index Schema"):
             st.success(f"Index: {schema['index_name']}")
             st.write(f"Key Field: `{schema['key_field']}`")
 
-            if schema.get('has_all_url_fields'):
-                st.success("✅ All URL tracking fields present")
-            else:
-                st.warning(f"⚠️ Missing fields: {', '.join(schema.get('missing_url_fields', []))}")
-
             with st.expander("View all fields"):
                 for field in schema['fields']:
                     key = "🔑" if field['key'] else ""

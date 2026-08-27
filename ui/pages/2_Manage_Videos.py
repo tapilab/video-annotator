@@ -11,7 +11,6 @@ import time
 from utils import (
     SEARCH_ENDPOINT,
     SEARCH_KEY,
-    check_url_fields_status,
     get_stored_videos,
     delete_video_by_id
 )
@@ -41,13 +40,6 @@ if st.session_state.get('pending_delete'):
         st.session_state.delete_success = True
     else:
         st.session_state.delete_error = vid_to_delete
-
-# Check URL fields status
-url_status = check_url_fields_status()
-if url_status['fields_exist']:
-    st.success("✅ URL tracking fields are configured")
-else:
-    st.warning(f"⚠️ Missing URL fields: {', '.join(url_status['missing_fields'])}")
 
 # ---------------------------------------------------------------------------
 # URL coverage analysis

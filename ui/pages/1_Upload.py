@@ -15,7 +15,6 @@ from utils import (
     AZURE_STORAGE_KEY,
     SPEECH_KEY,
     POLL_SECONDS,
-    check_url_fields_status,
     generate_video_id,
     check_yt_dlp,
     detect_url_type,
@@ -36,19 +35,6 @@ from utils import (
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
 st.title(APP_TITLE)
 st.subheader("Upload Video for Transcription")
-
-# Check URL fields status
-url_status = check_url_fields_status()
-
-if url_status['fields_exist']:
-    st.success("✅ URL Tracking Enabled - Original source URLs will be stored")
-else:
-    st.warning(f"""
-    ⚠️ **Partial URL Tracking** - Missing fields: {', '.join(url_status['missing_fields'])}
-
-    Videos will still be processed, but URL information will be limited.
-    Add missing fields to your Azure Search index for full functionality.
-    """)
 
 # Check Azure configuration
 azure_configured = bool(AZURE_STORAGE_KEY) and bool(SPEECH_KEY)

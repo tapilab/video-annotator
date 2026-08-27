@@ -8,6 +8,10 @@ curl -X PUT "$SEARCH_ENDPOINT/indexes/$SEARCH_INDEX?api-version=2024-05-01-previ
       { "name": "video_id",     "type": "Edm.String", "searchable": false, "filterable": true, "sortable": true, "facetable": true },
       { "name": "segment_id",   "type": "Edm.String", "searchable": false, "filterable": true, "sortable": true, "facetable": false },
 
+      { "name": "source_url",    "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false, "facetable": false },
+      { "name": "source_type",   "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false, "facetable": true },
+      { "name": "processed_at",  "type": "Edm.DateTimeOffset", "searchable": false, "filterable": true, "sortable": true, "facetable": false },
+
       { "name": "start_ms",     "type": "Edm.Int64",  "searchable": false, "filterable": true, "sortable": true, "facetable": false },
       { "name": "end_ms",       "type": "Edm.Int64",  "searchable": false, "filterable": true, "sortable": true, "facetable": false },
 

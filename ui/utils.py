@@ -27,7 +27,7 @@ __all__ = [
     "AZURE_STORAGE_ACCOUNT", "AZURE_STORAGE_KEY", "INPUT_CONTAINER", "SEGMENTS_CONTAINER",
     "POLL_SECONDS",
     "ms_to_ts", "ms_to_seconds", "sanitize_id", "detect_url_type", "check_yt_dlp",
-    "debug_check_index_schema", "get_index_schema", "check_url_fields_status",
+    "debug_check_index_schema", "get_index_schema",
     "submit_transcription_direct", "poll_transcription_operation", "get_transcription_from_result",
     "get_embeddings", "index_segments_direct", "process_transcription_to_segments",
     "get_stored_videos", "delete_video_by_id", "get_source_url_for_video",
@@ -144,8 +144,6 @@ def debug_check_index_schema():
             schema = r.json()
             key_field = None
             fields_info = []
-            url_fields = ['source_url', 'source_type', 'processed_at']
-            found_url_fields = []
             for field in schema.get("fields", []):
                 field_info = {
                     "name": field.get("name"),
@@ -159,15 +157,10 @@ def debug_check_index_schema():
                 fields_info.append(field_info)
                 if field.get("key", False):
                     key_field = field.get("name")
-                if field.get("name") in url_fields:
-                    found_url_fields.append(field.get("name"))
             return {
                 "index_name": schema.get("name"),
                 "key_field": key_field,
                 "fields": fields_info,
-                "found_url_fields": found_url_fields,
-                "missing_url_fields": list(set(url_fields) - set(found_url_fields)),
-                "has_all_url_fields": len(found_url_fields) == len(url_fields)
             }
         else:
             return f"Index check failed: HTTP {r.status_code}"
@@ -184,30 +177,6 @@ def get_index_schema():
         return schema_info
     else:
         raise RuntimeError(f"Cannot fetch index schema: {schema_info}")
-
-
-def check_url_fields_status():
-    if st.session_state.get('url_fields_status'):
-        return st.session_state.url_fields_status
-    try:
-        schema = get_index_schema()
-        if isinstance(schema, dict):
-            result = {
-                'fields_exist': schema.get('has_all_url_fields', False),
-                'found_fields': schema.get('found_url_fields', []),
-                'missing_fields': schema.get('missing_url_fields', []),
-                'key_field': schema.get('key_field')
-            }
-            st.session_state.url_fields_status = result
-            return result
-    except Exception:
-        pass
-    return {
-        'fields_exist': False,
-        'found_fields': [],
-        'missing_fields': ['source_url', 'source_type', 'processed_at'],
-        'key_field': None
-    }
 
 
 # =============================================================================
