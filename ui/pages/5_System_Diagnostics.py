@@ -4,11 +4,16 @@ system_diagnostics.py - System Diagnostics page for VANTAGE-AI
 
 import sys
 sys.path.append("..")
+import os
 import streamlit as st
 from utils import (
-    SPEECH_KEY, AZURE_OPENAI_KEY, SEARCH_KEY, AZURE_STORAGE_KEY, SEARCH_FN_URL,
-    check_yt_dlp, debug_check_index_schema
+    SEARCH_KEY, AZURE_STORAGE_KEY, SEARCH_FN_URL,
+    debug_check_index_schema
 )
+
+STAGE_MEDIA_URL = os.environ.get("STAGE_MEDIA_URL", "")
+TRANSCRIBE_URL = os.environ.get("TRANSCRIBE_URL", "")
+EMBED_INDEX_URL = os.environ.get("EMBED_INDEX_URL", "")
 
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
 st.title(APP_TITLE)
@@ -19,12 +24,12 @@ st.info("Check system configuration and troubleshoot issues")
 st.subheader("Configuration Status")
 
 config_checks = {
-    "Azure Speech (SPEECH_KEY)": bool(SPEECH_KEY),
-    "Azure OpenAI (AZURE_OPENAI_KEY)": bool(AZURE_OPENAI_KEY),
     "Azure Search (SEARCH_KEY)": bool(SEARCH_KEY),
     "Azure Storage (AZURE_STORAGE_KEY)": bool(AZURE_STORAGE_KEY),
     "Search Function (SEARCH_FN_URL)": bool(SEARCH_FN_URL),
-    "yt-dlp installed": check_yt_dlp()
+    "Stage Media Function (STAGE_MEDIA_URL)": bool(STAGE_MEDIA_URL),
+    "Transcribe Function (TRANSCRIBE_URL)": bool(TRANSCRIBE_URL),
+    "Embed & Index Function (EMBED_INDEX_URL)": bool(EMBED_INDEX_URL),
 }
 
 cols = st.columns(2)

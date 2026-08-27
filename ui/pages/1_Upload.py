@@ -1,47 +1,119 @@
 """
-upload_transcribe.py - Upload & Transcribe page for VANTAGE-AI
+1_Upload.py - Upload & Submit page for VANTAGE-AI
+
+Submits a video for processing and returns immediately - it does not wait
+for transcription to finish. Progress is checked later on the Manage Videos
+page, not watched live here.
 """
 
 import sys
-sys.path.append("..")          # allows import from parent directory
+sys.path.append("..")
 import streamlit as st
-import time
 import pandas as pd
 import io
-import tempfile
+import os
 import re
-from typing import Tuple, Optional
+from datetime import datetime, timezone
+import requests
 from utils import (
     AZURE_STORAGE_KEY,
-    SPEECH_KEY,
-    POLL_SECONDS,
     generate_video_id,
-    check_yt_dlp,
     detect_url_type,
-    upload_to_azure_blob_sdk,
-    upload_to_azure_blob_fixed,
-    submit_transcription_direct,
-    poll_transcription_operation,
-    get_transcription_from_result,
-    process_transcription_to_segments,
-    save_segments_to_blob,
-    index_segments_direct,
-    ms_to_ts,
-    process_single_video,
-    download_youtube_audio,
-    download_box_audio,
+    get_pending_uploads,
+    save_pending_uploads,
 )
+
+STAGE_MEDIA_URL = os.environ.get("STAGE_MEDIA_URL", "")
+TRANSCRIBE_URL = os.environ.get("TRANSCRIBE_URL", "")
 
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
 st.title(APP_TITLE)
 st.subheader("Upload Video for Transcription")
 
-# Check Azure configuration
-azure_configured = bool(AZURE_STORAGE_KEY) and bool(SPEECH_KEY)
+azure_configured = bool(AZURE_STORAGE_KEY) and bool(STAGE_MEDIA_URL) and bool(TRANSCRIBE_URL)
 if not azure_configured:
-    st.error("⚠️ Azure Storage and Speech keys required. Check .env file.")
+    st.error("⚠️ STAGE_MEDIA_URL, TRANSCRIBE_URL, and Azure Storage must be configured. Check .env file.")
 
+
+# ---------------------------------------------------------------------------
+# Backend calls
+# ---------------------------------------------------------------------------
+def stage_media(source_type: str, video_id: str, url: str = None,
+                 file_bytes: bytes = None, filename: str = None):
+    """Get the media into storage and back a URL the transcription backend can read."""
+    try:
+        if source_type in ("youtube", "box"):
+            r = requests.post(
+                STAGE_MEDIA_URL,
+                json={"source_type": source_type, "url": url, "video_id": video_id},
+                timeout=600,
+            )
+        elif source_type == "upload":
+            r = requests.post(
+                STAGE_MEDIA_URL,
+                params={"source_type": "upload", "video_id": video_id, "filename": filename or "upload.m4a"},
+                data=file_bytes,
+                timeout=600,
+            )
+        else:
+            return None, f"Unknown source_type for staging: {source_type}"
+
+        if r.status_code >= 400:
+            return None, (r.json().get("error", r.text) if r.text else f"HTTP {r.status_code}")
+        return r.json().get("media_url"), None
+    except requests.exceptions.RequestException as e:
+        return None, str(e)
+
+
+def submit_transcription(media_url: str, video_id: str):
+    """Submit a transcription job. Returns (job_url, error)."""
+    try:
+        r = requests.post(
+            TRANSCRIBE_URL,
+            json={"media_url": media_url, "video_id": video_id, "locale": "en-US"},
+            timeout=60,
+        )
+        if r.status_code >= 400:
+            return None, (r.json().get("error", r.text) if r.text else f"HTTP {r.status_code}")
+        return r.json().get("job_url"), None
+    except requests.exceptions.RequestException as e:
+        return None, str(e)
+
+
+def submit_video(source_type: str, source_url: str, video_id: str,
+                  file_bytes: bytes = None, filename: str = None):
+    """
+    Stage (if needed) and submit one video. source_url is the original,
+    user-facing link (or 'uploaded_file://<id>' for File Upload) - it's
+    what gets remembered as where the video came from, never an internal
+    storage link. Returns (video_id, error).
+    """
+    if source_type == "direct":
+        media_url = source_url
+    else:
+        media_url, error = stage_media(source_type, video_id, url=source_url,
+                                        file_bytes=file_bytes, filename=filename)
+        if error:
+            return video_id, f"Staging failed: {error}"
+
+    job_url, error = submit_transcription(media_url, video_id)
+    if error:
+        return video_id, f"Transcription submit failed: {error}"
+
+    pending = get_pending_uploads()
+    pending[video_id] = {
+        "job_url": job_url,
+        "source_url": source_url,
+        "source_type": source_type,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    save_pending_uploads(pending)
+    return video_id, None
+
+
+# ---------------------------------------------------------------------------
 # Source selection
+# ---------------------------------------------------------------------------
 source_type = st.radio(
     "Select Source",
     ["File Upload", "Direct URL", "YouTube", "📁 Batch CSV Upload"],
@@ -54,14 +126,14 @@ file_bytes = None
 yt_url = None
 csv_df = None
 detected_source_type = "unknown"
-original_box_url = None   # preserved for storing in index when Box is downloaded
+uploaded_filename = None
 
 # ---------------------------------------------------------------------------
 # File Upload
 # ---------------------------------------------------------------------------
 if source_type == "File Upload":
     if not azure_configured:
-        st.info("Please configure Azure Storage to enable file upload")
+        st.info("Please configure Azure Storage and the backend URLs to enable file upload")
     else:
         uploaded_file = st.file_uploader(
             "Choose video/audio file",
@@ -71,9 +143,10 @@ if source_type == "File Upload":
         if uploaded_file:
             st.success(f"📁 {uploaded_file.name} ({uploaded_file.size / 1024 / 1024:.1f} MB)")
             file_bytes = uploaded_file.getvalue()
+            uploaded_filename = uploaded_file.name
             video_id = generate_video_id(uploaded_file.name)
             detected_source_type = "upload"
-            st.info("File ready for upload")
+            st.info("File ready to submit")
 
 # ---------------------------------------------------------------------------
 # Direct URL  (includes Box URLs)
@@ -114,23 +187,8 @@ elif source_type == "YouTube":
     yt_url = st.text_input(
         "YouTube URL",
         placeholder="https://youtube.com/watch?v=...",
-        value=st.session_state.yt_url_value,
-        key="yt_url_input",
     )
-
-    if yt_url != st.session_state.yt_url_value:
-        st.session_state.yt_url_value = yt_url
-        try:
-            st.rerun()
-        except Exception:
-            pass
-
-    if not check_yt_dlp():
-        st.error(
-            "yt-dlp is not installed. Add `yt-dlp` to requirements.txt "
-            "and redeploy the application."
-        )
-    elif yt_url and yt_url.strip():
+    if yt_url and yt_url.strip():
         video_id = generate_video_id(f"yt_{yt_url.strip()}")
         detected_source_type = "youtube"
         st.success("YouTube URL ready")
@@ -216,8 +274,6 @@ elif source_type == "📁 Batch CSV Upload":
 
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
-            import traceback
-            st.error(traceback.format_exc())
 
 # ---------------------------------------------------------------------------
 # Custom Video ID (single-video modes only)
@@ -227,370 +283,105 @@ if custom_id.strip() and source_type != "📁 Batch CSV Upload":
     video_id = custom_id.strip()
 
 # ---------------------------------------------------------------------------
-# Enable / disable the process button
+# Enable / disable the submit button
 # ---------------------------------------------------------------------------
 can_process = False
 if source_type == "File Upload":
     can_process = file_bytes is not None and azure_configured
 elif source_type == "Direct URL":
-    can_process = bool(media_url) and len(str(media_url).strip()) > 0
+    can_process = bool(media_url) and azure_configured
 elif source_type == "YouTube":
-    yt_url_to_check = st.session_state.get("yt_url_value", "")
-    can_process = len(str(yt_url_to_check).strip()) > 0 and check_yt_dlp()
+    can_process = bool(yt_url and yt_url.strip()) and azure_configured
 elif source_type == "📁 Batch CSV Upload":
-    can_process = (
-        bool(st.session_state.get("batch_urls"))
-        and len(st.session_state.get("batch_urls", [])) > 0
-        and azure_configured
-        and not st.session_state.get("batch_processing", False)
-    )
+    can_process = bool(st.session_state.get("batch_urls")) and azure_configured
 
-button_text = "🚀 Start Transcription"
+button_text = "🚀 Submit for Transcription"
 if source_type == "📁 Batch CSV Upload":
     count = len(st.session_state.get("batch_urls", []))
-    button_text = f"🚀 Process {count} Videos from CSV"
+    button_text = f"🚀 Submit {count} Videos for Transcription"
 
 # ===========================================================================
-# MAIN PROCESSING
+# SUBMIT
 # ===========================================================================
 if st.button(button_text, type="primary", disabled=not can_process):
 
     # -----------------------------------------------------------------------
-    # BATCH PROCESSING
+    # BATCH
     # -----------------------------------------------------------------------
     if source_type == "📁 Batch CSV Upload":
-        st.session_state.batch_processing = True
-        st.session_state.batch_results = []
-
         urls = st.session_state.get("batch_urls", [])
         csv_df = st.session_state.get("batch_df")
         url_column = st.session_state.get("batch_url_column")
         id_column = st.session_state.get("batch_id_column")
 
-        total = len(urls)
-        st.info(f"Starting batch processing of {total} videos...")
-
-        overall_progress = st.progress(0)
-        status_text = st.empty()
-        results_container = st.container()
-
         results = []
-        for idx, url in enumerate(urls, 1):
-            custom_vid_id = None
-            if id_column != "Auto-generate":
-                row = csv_df[csv_df[url_column] == url]
-                if not row.empty:
-                    custom_vid_id = (
-                        re.sub(r"[^\w\s-]", "", str(row[id_column].iloc[0]))
-                        .strip()
-                        .replace(" ", "_")[:50]
-                    )
+        with st.spinner(f"Submitting {len(urls)} videos..."):
+            for url in urls:
+                custom_vid_id = None
+                if id_column != "Auto-generate":
+                    row = csv_df[csv_df[url_column] == url]
+                    if not row.empty:
+                        custom_vid_id = (
+                            re.sub(r"[^\w\s-]", "", str(row[id_column].iloc[0]))
+                            .strip()
+                            .replace(" ", "_")[:50]
+                        )
 
-            url_type = detect_url_type(url)
-            src_type = (
-                "youtube" if url_type == "youtube"
-                else "box" if url_type == "box"
-                else "direct"
-            )
+                url_type = detect_url_type(url)
+                src_type = "youtube" if url_type == "youtube" else "box" if url_type == "box" else "direct"
+                vid = custom_vid_id or generate_video_id(f"batch_{url}")
 
-            result = process_single_video(
-                url=url,
-                custom_id=custom_vid_id,
-                source_type=src_type,
-                progress_bar=overall_progress,
-                status_text=status_text,
-                overall_progress=(idx, total),
-            )
+                _, error = submit_video(src_type, url, vid)
+                results.append({"video_id": vid, "url": url, "source_type": src_type, "error": error or ""})
 
-            results.append(result)
-            st.session_state.batch_results = results
+        successful = [r for r in results if not r["error"]]
+        failed = [r for r in results if r["error"]]
 
-            overall_progress.progress(int((idx / total) * 100))
-
-            with results_container:
-                if result["status"] == "success":
-                    url_stored = (
-                        "✅ URL saved" if result.get("url_stored") else "⚠️ URL not stored"
-                    )
-                    st.success(
-                        f"✅ [{idx}/{total}] {result['video_id']}: "
-                        f"{result['segments_count']} segments ({url_stored})"
-                    )
-                else:
-                    error_msg = (result.get("error") or "Unknown error")[:200]
-                    st.error(f"❌ [{idx}/{total}] Failed: {error_msg}...")
-
-            time.sleep(1)  # basic rate limiting
-
-        overall_progress.progress(100)
-        status_text.text("Batch processing complete!")
-
-        successful = [r for r in results if r["status"] == "success"]
-        failed = [r for r in results if r["status"] == "failed"]
-
-        st.markdown("---")
-        st.subheader("📊 Batch Processing Summary")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total", total)
-        col2.metric(
-            "Successful",
-            len(successful),
-            f"{len(successful)/total*100:.1f}%" if total else "0%",
+        st.success(
+            f"✅ Submitted {len(successful)} of {len(results)} videos. "
+            f"Check **Manage Videos** to track progress."
         )
-        col3.metric(
-            "Failed",
-            len(failed),
-            f"{len(failed)/total*100:.1f}%" if total else "0%",
-        )
+        if failed:
+            st.warning(f"⚠️ {len(failed)} failed to submit:")
+            for r in failed:
+                st.text(f"• {r['video_id']}: {r['error']}")
 
-        with st.expander("View Detailed Results"):
-            results_df = pd.DataFrame(
-                [
-                    {
-                        "Video ID": r["video_id"],
-                        "URL": (
-                            r["url"][:50] + "..."
-                            if len(r["url"]) > 50
-                            else r["url"]
-                        ),
-                        "Source Type": r.get("source_type", "unknown"),
-                        "Status": r["status"],
-                        "Segments": r.get("segments_count", 0),
-                        "URL Stored": r.get("url_stored", False),
-                        "Indexing": r.get("index_status", "N/A"),
-                        "Error": (
-                            (r.get("error", "")[:100] + "...")
-                            if r.get("error")
-                            else ""
-                        ),
-                    }
-                    for r in results
-                ]
-            )
+        with st.expander("View submitted videos"):
+            results_df = pd.DataFrame(results)
             st.dataframe(results_df)
             csv_buffer = io.StringIO()
             results_df.to_csv(csv_buffer, index=False)
             st.download_button(
                 "Download Results CSV",
                 csv_buffer.getvalue(),
-                "batch_results.csv",
+                "batch_submit_results.csv",
                 "text/csv",
             )
 
-        if successful:
-            st.info("💡 **Search processed videos:**")
-            video_ids = [r["video_id"] for r in successful[:5]]
-            st.code(f"video_id:({' OR '.join(video_ids)})")
-
-        st.session_state.batch_processing = False
-
     # -----------------------------------------------------------------------
-    # SINGLE VIDEO PROCESSING
+    # SINGLE VIDEO
     # -----------------------------------------------------------------------
     else:
-        progress_bar = st.progress(0)
-        status = st.empty()
-
-        try:
-            # -----------------------------------------------------------
-            # File Upload → upload bytes to Azure Blob
-            # -----------------------------------------------------------
-            if source_type == "File Upload" and file_bytes:
-                progress_bar.progress(10)
-                status.text("Uploading to Azure Blob...")
-
-                blob_name = f"upload_{video_id}_{int(time.time())}.m4a"
-                sas_url, error = upload_to_azure_blob_sdk(file_bytes, blob_name)
-                if error and ("not installed" in error or "SDK" in error):
-                    sas_url, error = upload_to_azure_blob_fixed(file_bytes, blob_name)
-                if error:
-                    raise Exception(error)
-
-                media_url = sas_url
-                progress_bar.progress(50)
-
-            # -----------------------------------------------------------
-            # YouTube → yt-dlp download → upload to Azure Blob
-            # -----------------------------------------------------------
-            elif source_type == "YouTube":
-                yt_url = st.session_state.get("yt_url_value", "")
-                if not yt_url or not yt_url.strip():
-                    raise Exception("YouTube URL is empty")
-
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    progress_bar.progress(10)
-                    status.text("Downloading from YouTube...")
-
-                    output_path = f"{tmpdir}/youtube_{video_id}.m4a"
-                    downloaded_path, error = download_youtube_audio(
-                        yt_url.strip(), output_path
-                    )
-                    if error:
-                        raise Exception(error)
-
-                    progress_bar.progress(50)
-                    status.text("Uploading to Azure Blob...")
-
-                    with open(downloaded_path, "rb") as f:
-                        file_bytes = f.read()
-
-                    blob_name = f"youtube_{video_id}_{int(time.time())}.m4a"
-                    sas_url, error = upload_to_azure_blob_sdk(file_bytes, blob_name)
-                    if error and "not installed" in error:
-                        sas_url, error = upload_to_azure_blob_fixed(file_bytes, blob_name)
-                    if error:
-                        raise Exception(error)
-
-                    media_url = sas_url
-                    progress_bar.progress(75)
-
-            # -----------------------------------------------------------
-            # Box URL → download via requests → upload to Azure Blob
-            # Preserves the original Box URL for display / search links.
-            # -----------------------------------------------------------
-            elif source_type == "Direct URL" and detected_source_type == "box":
-                original_box_url = media_url   # keep for index storage
-
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    progress_bar.progress(10)
-                    status.text("Downloading from Box...")
-
-                    output_path = f"{tmpdir}/box_{video_id}.m4a"
-                    downloaded_path, error = download_box_audio(
-                        original_box_url, output_path
-                    )
-                    if error:
-                        raise Exception(f"Box download failed: {error}")
-
-                    progress_bar.progress(50)
-                    status.text("Uploading to Azure Blob...")
-
-                    with open(downloaded_path, "rb") as f:
-                        box_file_bytes = f.read()
-
-                    blob_name = f"box_{video_id}_{int(time.time())}.m4a"
-                    sas_url, error = upload_to_azure_blob_sdk(box_file_bytes, blob_name)
-                    if error and "not installed" in error:
-                        sas_url, error = upload_to_azure_blob_fixed(
-                            box_file_bytes, blob_name
-                        )
-                    if error:
-                        raise Exception(f"Azure upload failed: {error}")
-
-                    # SAS URL goes to Speech API; original Box URL goes to the index
-                    media_url = sas_url
-                    progress_bar.progress(75)
-
-            # -----------------------------------------------------------
-            # Generic Direct URL → pass straight to Speech API
-            # -----------------------------------------------------------
-            # media_url is already set from the input widget; nothing extra needed.
-
-            if not media_url:
-                raise Exception("No media URL available")
-
-            # -----------------------------------------------------------
-            # Submit to Azure Speech-to-Text
-            # -----------------------------------------------------------
-            status.text("Submitting to Azure Speech-to-Text...")
-            result = submit_transcription_direct(video_id, media_url)
-            operation_url = result.get("operation_url")
-            if not operation_url:
-                raise Exception("No operation URL returned")
-
-            # -----------------------------------------------------------
-            # Poll until complete
-            # -----------------------------------------------------------
-            max_polls = 120
-            transcription_data = None
-
-            for i in range(max_polls):
-                time.sleep(POLL_SECONDS)
-                poll_result = poll_transcription_operation(operation_url)
-                poll_status = poll_result.get("status", "unknown")
-
-                progress = min(75 + int((i / max_polls) * 20), 95)
-                progress_bar.progress(progress)
-                status.text(
-                    f"Transcribing... ({i * POLL_SECONDS // 60} min) "
-                    f"— Status: {poll_status}"
+        with st.spinner("Submitting..."):
+            if source_type == "File Upload":
+                vid, error = submit_video(
+                    "upload", f"uploaded_file://{video_id}", video_id,
+                    file_bytes=file_bytes, filename=uploaded_filename,
                 )
-
-                if poll_status.lower() == "succeeded":
-                    transcription_data = get_transcription_from_result(poll_result)
-                    break
-                elif poll_status.lower() == "failed":
-                    raise Exception(
-                        "Transcription failed: "
-                        + poll_result.get("properties", {})
-                        .get("error", {})
-                        .get("message", "Unknown error")
-                    )
-
-            if not transcription_data:
-                raise Exception("Transcription timed out")
-
-            # -----------------------------------------------------------
-            # Segment, save, index
-            # -----------------------------------------------------------
-            progress_bar.progress(98)
-            status.text("Processing segments and indexing...")
-
-            segments = process_transcription_to_segments(transcription_data, video_id)
-            save_segments_to_blob(video_id, segments)
-
-            # Determine the URL to store in the search index.
-            # Always use the original user-facing URL, never an internal SAS URL.
-            if source_type == "YouTube":
-                original_url = st.session_state.get("yt_url_value", "")
+            elif source_type == "YouTube":
+                vid, error = submit_video("youtube", yt_url.strip(), video_id)
             elif source_type == "Direct URL" and detected_source_type == "box":
-                original_url = original_box_url          # Box viewer/shared link
-            elif source_type == "Direct URL":
-                original_url = url_input.strip()         # whatever the user typed
-            elif source_type == "File Upload":
-                original_url = f"uploaded_file://{video_id}"
-            else:
-                original_url = None
+                vid, error = submit_video("box", media_url, video_id)
+            else:  # Direct URL, generic
+                vid, error = submit_video("direct", media_url, video_id)
 
-            index_result = index_segments_direct(
-                video_id,
-                segments,
-                source_url=original_url,
-                source_type=detected_source_type,
-            )
-
-            url_stored_msg = (
-                "✅ Source URL stored"
-                if index_result.get("source_url_stored")
-                else "⚠️ URL storage not available"
-            )
-
-            progress_bar.progress(100)
-            status.text("Complete!")
-
+        if error:
+            st.error(f"❌ {error}")
+        else:
             st.success(
                 f"""
-                ✅ **Transcription Complete!**
-                - Video ID: `{video_id}`
-                - Segments: {len(segments)}
-                - Source Type: {detected_source_type}
-                - Indexed: {index_result.get('indexed', 0)} documents
-                - {url_stored_msg}
+                ✅ **Submitted!**
+                - Video ID: `{vid}`
+                - Check the **Manage Videos** page to see when it's ready.
                 """
             )
-
-            if original_url and not original_url.startswith("uploaded_file://"):
-                st.info(f"**Original Source:** [{original_url}]({original_url})")
-
-            st.code(f"Search: video_id:{video_id}")
-
-            with st.expander("View first 5 segments"):
-                for seg in segments[:5]:
-                    st.write(
-                        f"**{ms_to_ts(seg['start_ms'])} – {ms_to_ts(seg['end_ms'])}:** "
-                        f"{seg['text'][:100]}..."
-                    )
-
-        except Exception as e:
-            st.error(f"❌ Error: {str(e)}")
-            st.exception(e)

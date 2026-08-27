@@ -24,9 +24,6 @@ st.set_page_config(page_title=APP_TITLE, layout="wide")
 # SESSION STATE INITIALIZATION
 # =============================================================================
 defaults = {
-    'yt_url_value': "",
-    'batch_results': [],
-    'batch_processing': False,
     'index_schema_cache': None,
     'stored_videos_cache': None,
     'debug_info': {},

@@ -7,13 +7,20 @@ sys.path.append("..")
 import streamlit as st
 import pandas as pd
 import io
+import os
 import time
+import requests
 from utils import (
     SEARCH_ENDPOINT,
     SEARCH_KEY,
     get_stored_videos,
-    delete_video_by_id
+    delete_video_by_id,
+    get_pending_uploads,
+    save_pending_uploads,
 )
+
+TRANSCRIBE_URL = os.environ.get("TRANSCRIBE_URL", "")
+EMBED_INDEX_URL = os.environ.get("EMBED_INDEX_URL", "")
 
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
 st.title(APP_TITLE)
@@ -23,6 +30,62 @@ st.info("View, search, and manage all processed videos and their source URLs")
 if not SEARCH_ENDPOINT or not SEARCH_KEY:
     st.error("Azure Search not configured. Cannot retrieve video list.")
     st.stop()
+
+# ---------------------------------------------------------------------------
+# Pending uploads - videos submitted from the Upload page that are still
+# transcribing or waiting to be indexed. This is what replaced the old
+# progress bar: check back here instead of watching a live status screen.
+# ---------------------------------------------------------------------------
+st.subheader("⏳ Pending Uploads")
+
+pending = get_pending_uploads()
+
+if not pending:
+    st.caption("No videos currently processing.")
+else:
+    if st.button("🔄 Check Pending Uploads"):
+        updated_pending = dict(pending)
+        for vid, info in pending.items():
+            try:
+                r = requests.post(
+                    TRANSCRIBE_URL,
+                    json={"job_url": info["job_url"], "video_id": vid},
+                    timeout=60,
+                )
+                resp = r.json() if r.text else {}
+                status = resp.get("status")
+
+                if status == "Succeeded":
+                    segments_blob = resp.get("segments_blob")
+                    idx_r = requests.post(
+                        EMBED_INDEX_URL,
+                        json={
+                            "segments_blob": segments_blob,
+                            "source_url": info.get("source_url", ""),
+                            "source_type": info.get("source_type", "unknown"),
+                        },
+                        timeout=180,
+                    )
+                    if idx_r.status_code < 400:
+                        del updated_pending[vid]
+                        st.success(f"✅ {vid} finished processing and is now searchable.")
+                    else:
+                        st.error(f"❌ {vid} transcribed but indexing failed: {idx_r.text}")
+                elif status == "Failed":
+                    st.error(f"❌ {vid} failed: {resp}")
+                    del updated_pending[vid]
+                else:
+                    st.info(f"⏳ {vid}: still {status or 'processing'}")
+            except Exception as e:
+                st.warning(f"Could not check {vid}: {e}")
+
+        save_pending_uploads(updated_pending)
+        st.rerun()
+
+    for vid, info in pending.items():
+        st.text(f"• {vid} — submitted {info.get('submitted_at', 'unknown')} ({info.get('source_type', 'unknown')})")
+
+st.markdown("---")
 
 # ---------------------------------------------------------------------------
 # Process any pending delete BEFORE rendering
