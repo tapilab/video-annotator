@@ -38,6 +38,16 @@ if not azure_configured:
 # ---------------------------------------------------------------------------
 # Backend calls
 # ---------------------------------------------------------------------------
+def _error_from_response(r: requests.Response) -> str:
+    """Pull an error message out of a failed response, even if the body isn't JSON."""
+    if not r.text:
+        return f"HTTP {r.status_code}"
+    try:
+        return r.json().get("error", r.text)
+    except ValueError:
+        return f"HTTP {r.status_code}: {r.text[:500]}"
+
+
 def stage_media(source_type: str, video_id: str, url: str = None,
                  file_bytes: bytes = None, filename: str = None):
     """Get the media into storage and back a URL the transcription backend can read."""
@@ -59,10 +69,10 @@ def stage_media(source_type: str, video_id: str, url: str = None,
             return None, f"Unknown source_type for staging: {source_type}"
 
         if r.status_code >= 400:
-            return None, (r.json().get("error", r.text) if r.text else f"HTTP {r.status_code}")
+            return None, _error_from_response(r)
         return r.json().get("media_url"), None
-    except requests.exceptions.RequestException as e:
-        return None, str(e)
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 
 def submit_transcription(media_url: str, video_id: str):
@@ -74,10 +84,10 @@ def submit_transcription(media_url: str, video_id: str):
             timeout=60,
         )
         if r.status_code >= 400:
-            return None, (r.json().get("error", r.text) if r.text else f"HTTP {r.status_code}")
+            return None, _error_from_response(r)
         return r.json().get("job_url"), None
-    except requests.exceptions.RequestException as e:
-        return None, str(e)
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 
 def submit_video(source_type: str, source_url: str, video_id: str,

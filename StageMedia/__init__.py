@@ -19,11 +19,12 @@ Output: JSON with { "media_url": "<signed blob URL>", "video_id": ..., "source_t
 """
 
 import json
+import logging
 import os
 import re
-import subprocess
 import tempfile
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Tuple
@@ -36,55 +37,52 @@ from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPerm
 INPUT_CONTAINER = os.environ.get("INPUT_CONTAINER", "speech-input")
 
 
-def _check_yt_dlp() -> bool:
-    try:
-        result = subprocess.run(["which", "yt-dlp"], capture_output=True, text=True)
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
 def _download_youtube_audio(youtube_url: str, output_path: str) -> Tuple[Optional[str], Optional[str]]:
-    if not _check_yt_dlp():
-        return None, "yt-dlp not installed"
+    """
+    Uses yt-dlp as a Python library rather than shelling out to it as a command -
+    Azure's environment doesn't expose installed packages to a freshly spawned
+    subprocess the way it does to the function's own already-running code, so
+    the subprocess approach that works locally fails here.
+
+    Only accepts YouTube's native m4a audio stream, with no conversion step.
+    That avoids needing ffmpeg entirely, which Azure's environment doesn't have.
+    A video with no m4a audio stream available is rejected with a clear error,
+    rather than guessing whether some other format would transcribe correctly.
+    """
     if not youtube_url or not youtube_url.strip():
         return None, "YouTube URL is empty"
     try:
-        cmd = [
-            "yt-dlp",
-            "-f", "bestaudio[ext=m4a]/bestaudio",
-            "--extract-audio",
-            "--audio-format", "m4a",
-            "--audio-quality", "0",
-            "--no-check-certificate",
-            "--no-warnings",
-            "-o", output_path,
-            youtube_url.strip(),
-        ]
-        try:
-            node_check = subprocess.run(["which", "node"], capture_output=True, text=True)
-            if node_check.returncode != 0:
-                cmd.extend(["--extractor-args", "youtube:player_client=web"])
-        except Exception:
-            pass
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if result.returncode != 0:
-            error_msg = result.stderr[:500]
-            if "JavaScript runtime" in error_msg:
-                error_msg += " Tip: install Node.js, or run: pip install yt-dlp --upgrade"
-            return None, f"yt-dlp failed: {error_msg}"
-        if os.path.exists(output_path):
-            return output_path, None
-        base = output_path.rsplit(".", 1)[0]
-        for ext in [".m4a", ".mp3", ".webm", ".opus"]:
-            alt_path = base + ext
-            if os.path.exists(alt_path):
-                return alt_path, None
-        return None, "Download completed but file not found"
-    except subprocess.TimeoutExpired:
-        return None, "Download timed out after 10 minutes"
+        import yt_dlp
+    except ImportError as e:
+        return None, f"yt-dlp not available ({type(e).__name__}: {e})"
+
+    base = output_path.rsplit(".", 1)[0]
+    ydl_opts = {
+        "format": "bestaudio[ext=m4a]",
+        "outtmpl": f"{base}.%(ext)s",
+        "nocheckcertificate": True,
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        # YouTube's bot-check can reject the default client; trying a couple
+        # of alternates in order improves the odds one of them is let through.
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+            },
+        },
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([youtube_url.strip()])
     except Exception as e:
-        return None, f"Error: {str(e)}"
+        return None, f"yt-dlp failed: {type(e).__name__}: {e}"
+
+    final_path = f"{base}.m4a"
+    if os.path.exists(final_path):
+        return final_path, None
+    return None, "Download completed but no m4a audio stream was found for this video"
 
 
 def _download_box_audio(box_url: str, output_path: str) -> Tuple[Optional[str], Optional[str]]:
@@ -316,8 +314,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     except Exception as e:
+        logging.exception("StageMedia failed")
         return func.HttpResponse(
-            json.dumps({"error": str(e)}),
+            json.dumps({"error": str(e), "trace": traceback.format_exc()}),
             mimetype="application/json",
             status_code=500,
         )

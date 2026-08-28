@@ -21,7 +21,9 @@ Output: JSON with job_url (submission) or status/result (polling)
 """
 
 import json
+import logging
 import os
+import traceback
 import azure.functions as func
 
 from shared.speech_batch import (
@@ -127,8 +129,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     except Exception as e:
+        logging.exception("TranscribeHttp failed")
         return func.HttpResponse(
-            json.dumps({"error": str(e)}),
+            json.dumps({"error": str(e), "trace": traceback.format_exc()}),
             mimetype="application/json",
             status_code=500,
         )

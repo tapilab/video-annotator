@@ -77,7 +77,7 @@ else:
                 else:
                     st.info(f"⏳ {vid}: still {status or 'processing'}")
             except Exception as e:
-                st.warning(f"Could not check {vid}: {e}")
+                st.warning(f"Could not check {vid}: {type(e).__name__}: {e}")
 
         save_pending_uploads(updated_pending)
         st.rerun()

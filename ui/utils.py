@@ -18,6 +18,7 @@ from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
 from dotenv import load_dotenv
 from azure.storage.blob import BlobServiceClient
+from azure.core.exceptions import ResourceNotFoundError
 
 load_dotenv()
 
@@ -317,7 +318,10 @@ def get_pending_uploads() -> Dict[str, Any]:
         )
         bc = service.get_blob_client(container=PENDING_CONTAINER, blob="pending.json")
         return json.loads(bc.download_blob().readall())
-    except Exception:
+    except ResourceNotFoundError:
+        return {}  # no pending uploads yet - this is the normal, expected case
+    except Exception as e:
+        st.error(f"Could not read pending uploads: {type(e).__name__}: {e}")
         return {}
 
 
