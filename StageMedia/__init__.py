@@ -64,13 +64,6 @@ def _download_youtube_audio(youtube_url: str, output_path: str) -> Tuple[Optiona
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        # YouTube's bot-check can reject the default client; trying a couple
-        # of alternates in order improves the odds one of them is let through.
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"],
-            },
-        },
     }
 
     try:
