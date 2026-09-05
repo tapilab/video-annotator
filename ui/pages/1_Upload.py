@@ -27,7 +27,7 @@ STAGE_MEDIA_URL = os.environ.get("STAGE_MEDIA_URL", "")
 TRANSCRIBE_URL = os.environ.get("TRANSCRIBE_URL", "")
 
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
-st.title(APP_TITLE)
+st.title(APP_TITLE, anchor=False)
 st.subheader("Upload Video for Transcription")
 
 azure_configured = bool(AZURE_STORAGE_KEY) and bool(STAGE_MEDIA_URL) and bool(TRANSCRIBE_URL)
@@ -151,12 +151,10 @@ if source_type == "File Upload":
             accept_multiple_files=False,
         )
         if uploaded_file:
-            st.success(f"📁 {uploaded_file.name} ({uploaded_file.size / 1024 / 1024:.1f} MB)")
             file_bytes = uploaded_file.getvalue()
             uploaded_filename = uploaded_file.name
             video_id = generate_video_id(uploaded_file.name)
             detected_source_type = "upload"
-            st.info("File ready to submit")
 
 # ---------------------------------------------------------------------------
 # Direct URL  (includes Box URLs)

@@ -13,17 +13,20 @@ Configuration (via .env):
   - MANAGE_LABELS_URL: ManageLabels function endpoint
 """
 
+import sys
+sys.path.append("..")
 import os
 import requests
 import streamlit as st
 from dotenv import load_dotenv
+from utils import format_timestamp
 
 load_dotenv()
 
 MANAGE_LABELS_URL = os.environ.get("MANAGE_LABELS_URL", "")
 
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
-st.title(APP_TITLE)
+st.title(APP_TITLE, anchor=False)
 st.subheader("Label Library Management")
 
 if not MANAGE_LABELS_URL:
@@ -93,7 +96,7 @@ with tab_view:
         st.rerun()
 
     if library and "labels" in library:
-        st.caption(f"**Last Updated:** {library.get('last_updated', 'N/A')}")
+        st.caption(f"**Last Updated:** {format_timestamp(library.get('last_updated', 'N/A'))}")
 
         if not library["labels"]:
             st.info("No labels defined yet. Add labels in the 'Add Label' tab.")
@@ -104,8 +107,8 @@ with tab_view:
                 with st.expander(f"{i}. {label['name']}", expanded=False):
                     st.write(f"**Description:** {label['description']}")
                     st.write(f"**Label ID:** `{label['label_id']}`")
-                    st.write(f"**Created:** {label['created_at']}")
-                    st.write(f"**Updated:** {label['updated_at']}")
+                    st.write(f"**Created:** {format_timestamp(label['created_at'])}")
+                    st.write(f"**Updated:** {format_timestamp(label['updated_at'])}")
                     examples = label.get("examples", [])
                     if examples:
                         st.write(f"**Positive Examples ({len(examples)}/3):**")

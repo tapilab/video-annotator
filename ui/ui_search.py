@@ -216,10 +216,7 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
 # =============================================================================
 # SEARCH PAGE
 # =============================================================================
-def render_search_page() -> None:
-    st.title(APP_TITLE)
-    st.caption("Upload videos, define annotation labels, run LLM labeling, and search across segment-level results.")
-
+def _render_how_to_use() -> None:
     with st.expander("How to use this app", expanded=False):
         st.markdown(
             """
@@ -236,6 +233,12 @@ def render_search_page() -> None:
             - Use the cache refresh button if new videos were recently ingested.
             """
         )
+
+
+def render_search_page() -> None:
+    st.title(APP_TITLE, anchor=False)
+    st.subheader("Search Video Segments")
+    st.caption("Upload videos, define annotation labels, run LLM labeling, and search across segment-level results.")
 
     # Load metadata on first run
     if not st.session_state.get('metadata_loaded'):
@@ -288,6 +291,7 @@ def render_search_page() -> None:
 
     params = st.session_state.get('search_params')
     if not params:
+        _render_how_to_use()
         return
 
     page = st.session_state['search_page']
@@ -317,6 +321,7 @@ def render_search_page() -> None:
 
     if not hits and page == 0:
         st.info("No results found.")
+        _render_how_to_use()
         return
 
     st.caption(f"Total: {total_count} | Page {page + 1} of {total_pages}")
@@ -365,6 +370,8 @@ def render_search_page() -> None:
 
     type_summary = ", ".join(f"{k}: {v}" for k, v in type_counts.items())
     st.caption(f"Link types: {type_summary}")
+
+    _render_how_to_use()
 
 
 # =============================================================================
