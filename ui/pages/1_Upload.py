@@ -12,7 +12,6 @@ import streamlit as st
 import pandas as pd
 import io
 import os
-import re
 from datetime import datetime, timezone
 import requests
 from utils import (
@@ -126,14 +125,13 @@ def submit_video(source_type: str, source_url: str, video_id: str,
 # ---------------------------------------------------------------------------
 source_type = st.radio(
     "Select Source",
-    ["File Upload", "Direct URL", "YouTube", "📁 Batch CSV Upload"],
+    ["File Upload", "Upload from URL", "📁 Batch CSV Upload"],
     horizontal=True,
 )
 
 media_url = None
 video_id = None
 file_bytes = None
-yt_url = None
 csv_df = None
 detected_source_type = "unknown"
 uploaded_filename = None
@@ -157,22 +155,24 @@ if source_type == "File Upload":
             detected_source_type = "upload"
 
 # ---------------------------------------------------------------------------
-# Direct URL  (includes Box URLs)
+# URL  (YouTube, Box, or a direct link - auto-detected from what's pasted)
 # ---------------------------------------------------------------------------
-elif source_type == "Direct URL":
+elif source_type == "Upload from URL":
     url_input = st.text_input(
         "Media URL",
         placeholder=(
-            "https://tulane.app.box.com/file/... "
+            "https://youtube.com/watch?v=... , "
+            "https://tulane.app.box.com/file/... , "
             "or https://example.com/audio.mp3"
         ),
     )
     if url_input.strip():
         media_url = url_input.strip()
         video_id = generate_video_id(url_input)
-        url_type_detected = detect_url_type(url_input.strip())
-        detected_source_type = url_type_detected  # "box", "direct", etc.
-        if url_type_detected == "box":
+        detected_source_type = detect_url_type(url_input.strip())
+        if detected_source_type == "youtube":
+            st.success("🎬 YouTube URL detected")
+        elif detected_source_type == "box":
             if "/file/" in url_input:
                 st.warning(
                     "📦 **Box viewer link detected.** "
@@ -181,25 +181,9 @@ elif source_type == "Direct URL":
                     "and paste the resulting `shared/static/...` URL here instead."
                 )
             else:
-                st.info(
-                    "📦 Box URL detected — file will be downloaded and "
-                    "re-uploaded to Azure for transcription."
-                )
+                st.info("📦 Box URL detected")
         else:
             st.success("✅ URL validated")
-
-# ---------------------------------------------------------------------------
-# YouTube
-# ---------------------------------------------------------------------------
-elif source_type == "YouTube":
-    yt_url = st.text_input(
-        "YouTube URL",
-        placeholder="https://youtube.com/watch?v=...",
-    )
-    if yt_url and yt_url.strip():
-        video_id = generate_video_id(f"yt_{yt_url.strip()}")
-        detected_source_type = "youtube"
-        st.success("YouTube URL ready")
 
 # ---------------------------------------------------------------------------
 # Batch CSV Upload
@@ -240,14 +224,6 @@ elif source_type == "📁 Batch CSV Upload":
                 "Select column containing video URLs",
                 options=csv_df.columns.tolist(),
             )
-            id_column_options = ["Auto-generate"] + [
-                c for c in csv_df.columns if c != url_column
-            ]
-            id_column = st.selectbox(
-                "Select column for custom Video ID (optional)",
-                options=id_column_options,
-                index=0,
-            )
 
             urls_raw = csv_df[url_column].dropna().astype(str).tolist()
             urls_to_process = [u.strip() for u in urls_raw if u.strip()]
@@ -276,19 +252,9 @@ elif source_type == "📁 Batch CSV Upload":
             col3.metric("❌ Invalid", len(invalid_urls))
 
             st.session_state["batch_urls"] = valid_urls
-            st.session_state["batch_df"] = csv_df
-            st.session_state["batch_url_column"] = url_column
-            st.session_state["batch_id_column"] = id_column
 
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
-
-# ---------------------------------------------------------------------------
-# Custom Video ID (single-video modes only)
-# ---------------------------------------------------------------------------
-custom_id = st.text_input("Custom Video ID (optional)")
-if custom_id.strip() and source_type != "📁 Batch CSV Upload":
-    video_id = custom_id.strip()
 
 # ---------------------------------------------------------------------------
 # Enable / disable the submit button
@@ -296,10 +262,8 @@ if custom_id.strip() and source_type != "📁 Batch CSV Upload":
 can_process = False
 if source_type == "File Upload":
     can_process = file_bytes is not None and azure_configured
-elif source_type == "Direct URL":
+elif source_type == "Upload from URL":
     can_process = bool(media_url) and azure_configured
-elif source_type == "YouTube":
-    can_process = bool(yt_url and yt_url.strip()) and azure_configured
 elif source_type == "📁 Batch CSV Upload":
     can_process = bool(st.session_state.get("batch_urls")) and azure_configured
 
@@ -318,26 +282,13 @@ if st.button(button_text, type="primary", disabled=not can_process):
     # -----------------------------------------------------------------------
     if source_type == "📁 Batch CSV Upload":
         urls = st.session_state.get("batch_urls", [])
-        csv_df = st.session_state.get("batch_df")
-        url_column = st.session_state.get("batch_url_column")
-        id_column = st.session_state.get("batch_id_column")
 
         results = []
         with st.spinner(f"Submitting {len(urls)} videos..."):
             for url in urls:
-                custom_vid_id = None
-                if id_column != "Auto-generate":
-                    row = csv_df[csv_df[url_column] == url]
-                    if not row.empty:
-                        custom_vid_id = (
-                            re.sub(r"[^\w\s-]", "", str(row[id_column].iloc[0]))
-                            .strip()
-                            .replace(" ", "_")[:50]
-                        )
-
                 url_type = detect_url_type(url)
                 src_type = "youtube" if url_type == "youtube" else "box" if url_type == "box" else "direct"
-                vid = custom_vid_id or generate_video_id(f"batch_{url}")
+                vid = generate_video_id(f"batch_{url}")
 
                 _, error = submit_video(src_type, url, vid)
                 results.append({"video_id": vid, "url": url, "source_type": src_type, "error": error or ""})
@@ -347,7 +298,7 @@ if st.button(button_text, type="primary", disabled=not can_process):
 
         st.success(
             f"✅ Submitted {len(successful)} of {len(results)} videos. "
-            f"Check **Manage Videos** to track progress."
+            f"Check the **Pending Uploads** tab in the **Manage Videos** page to track progress."
         )
         if failed:
             st.warning(f"⚠️ {len(failed)} failed to submit:")
@@ -376,11 +327,9 @@ if st.button(button_text, type="primary", disabled=not can_process):
                     "upload", f"uploaded_file://{video_id}", video_id,
                     file_bytes=file_bytes, filename=uploaded_filename,
                 )
-            elif source_type == "YouTube":
-                vid, error = submit_video("youtube", yt_url.strip(), video_id)
-            elif source_type == "Direct URL" and detected_source_type == "box":
-                vid, error = submit_video("box", media_url, video_id)
-            else:  # Direct URL, generic
+            elif detected_source_type in ("youtube", "box"):
+                vid, error = submit_video(detected_source_type, media_url, video_id)
+            else:  # URL, but not YouTube or Box - treat as a plain direct link
                 vid, error = submit_video("direct", media_url, video_id)
 
         if error:
@@ -390,6 +339,6 @@ if st.button(button_text, type="primary", disabled=not can_process):
                 f"""
                 ✅ **Submitted!**
                 - Video ID: `{vid}`
-                - Check the **Manage Videos** page to see when it's ready.
+                - "Check the **Pending Uploads** tab in the **Manage Videos** page to track progress."
                 """
             )

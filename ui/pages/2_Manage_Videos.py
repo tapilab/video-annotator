@@ -25,7 +25,6 @@ EMBED_INDEX_URL = os.environ.get("EMBED_INDEX_URL", "")
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
 st.title(APP_TITLE, anchor=False)
 st.subheader("Manage Stored Videos")
-st.caption("View, search, and manage all processed videos and their source URLs")
 
 if not SEARCH_ENDPOINT or not SEARCH_ADMIN_KEY:
     st.error("Azure Search not configured. Cannot retrieve video list.")
@@ -48,7 +47,7 @@ if st.session_state.get('pending_delete'):
     else:
         st.session_state.delete_error = vid_to_delete
 
-tab_browse, tab_pending, tab_coverage = st.tabs(["Browse & Manage", "Pending Uploads", "URL Coverage"])
+tab_browse, tab_pending = st.tabs(["Browse & Manage", "Pending Uploads"])
 
 # ---------------------------------------------------------------------------
 # Browse, filter, delete, export
@@ -146,8 +145,6 @@ with tab_browse:
                             st.code(display_url)
                             if str(src_url).startswith('http'):
                                 st.markdown(f"[Open Source ↗]({src_url})")
-                        else:
-                            st.warning("No source URL stored")
 
                     with col_btn:
                         btn_key = f"del_{vid}_{i}_{stype}"
@@ -164,7 +161,6 @@ with tab_browse:
                     'video_id':     v.get('video_id'),
                     'source_type':  v.get('source_type') or 'unknown',
                     'source_url':   v.get('source_url', ''),
-                    'has_url_data': bool(v.get('source_url')),
                     'processed_at': v.get('processed_at', 'unknown'),
                 }
                 for v in videos
@@ -225,40 +221,3 @@ with tab_pending:
 
         for vid, info in pending.items():
             st.text(f"• {vid} — submitted {format_timestamp(info.get('submitted_at', 'unknown'))} ({info.get('source_type', 'unknown')})")
-
-# ---------------------------------------------------------------------------
-# URL coverage analysis
-# ---------------------------------------------------------------------------
-with tab_coverage:
-    if st.button("Analyze URL Data Coverage"):
-        with st.spinner("Analyzing..."):
-            all_videos = get_stored_videos(include_missing=True)
-
-            with_urls    = [v for v in all_videos if v.get('source_url') and v.get('source_type') not in ('', 'unknown')]
-            without_urls = [v for v in all_videos if not v.get('source_url') or v.get('source_type') in ('', 'unknown')]
-
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total Videos", len(all_videos))
-            col2.metric("With URL Data", len(with_urls),
-                        f"{len(with_urls)/len(all_videos)*100:.1f}%" if all_videos else "0%")
-            col3.metric("Missing URL Data", len(without_urls),
-                        f"{len(without_urls)/len(all_videos)*100:.1f}%" if all_videos else "0%")
-
-            st.subheader("Breakdown by Source Type")
-            type_counts = {}
-            for v in all_videos:
-                t = v.get('source_type') or 'unknown'
-                type_counts[t] = type_counts.get(t, 0) + 1
-            cols = st.columns(max(len(type_counts), 1))
-            for i, (stype, count) in enumerate(sorted(type_counts.items())):
-                icon = ("🎬" if stype == "youtube" else
-                        "📦" if stype == "box"     else
-                        "📄" if stype == "direct"  else
-                        "📁" if stype == "upload"  else "❓")
-                cols[i % len(cols)].metric(f"{icon} {stype}", count)
-
-            if without_urls:
-                with st.expander(f"Videos without URL data ({len(without_urls)})"):
-                    st.info("These were likely processed before URL tracking was enabled")
-                    for v in without_urls[:20]:
-                        st.text(f"• {v.get('video_id')}")

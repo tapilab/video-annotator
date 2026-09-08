@@ -238,7 +238,6 @@ def _render_how_to_use() -> None:
 def render_search_page() -> None:
     st.title(APP_TITLE, anchor=False)
     st.subheader("Search Video Segments")
-    st.caption("Upload videos, define annotation labels, run LLM labeling, and search across segment-level results.")
 
     # Load metadata on first run
     if not st.session_state.get('metadata_loaded'):
@@ -248,11 +247,11 @@ def render_search_page() -> None:
 
     # ── Sidebar ───────────────────────────────────────────────────────────
     with st.sidebar:
-        st.header("Settings")
+        st.header("Search Settings")
         mode = st.selectbox("Mode", ["keyword", "hybrid", "vector"], index=1)
-        video_id_filter = st.text_input("Filter by video_id (optional)", value="")
+        video_id_filter = st.text_input("Filter by video_id", value="")
         label_names = get_label_names()
-        selected_labels = st.multiselect("Filter by labels (optional)", label_names)
+        selected_labels = st.multiselect("Filter by labels", label_names)
         if selected_labels:
             label_match = st.radio("Match labels", ["any", "all"], horizontal=True)
         else:
@@ -265,8 +264,6 @@ def render_search_page() -> None:
             st.session_state['video_metadata_cache'] = load_all_video_metadata()
             st.session_state['metadata_loaded'] = True
             st.rerun()
-
-        st.caption("Tip: keep k ~ 4×top for hybrid.")
 
     # ── Search bar ────────────────────────────────────────────────────────
     PAGE_SIZE = 10
