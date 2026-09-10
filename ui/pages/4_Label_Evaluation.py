@@ -22,7 +22,7 @@ load_dotenv()
 EVAL_LABELS_URL = os.environ.get("EVAL_LABELS_URL", "")
 
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
-st.title(APP_TITLE)
+st.title(APP_TITLE, anchor=False)
 st.subheader("Label Accuracy Evaluation")
 
 if not EVAL_LABELS_URL:

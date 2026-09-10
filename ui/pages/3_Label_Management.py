@@ -13,17 +13,20 @@ Configuration (via .env):
   - MANAGE_LABELS_URL: ManageLabels function endpoint
 """
 
+import sys
+sys.path.append("..")
 import os
 import requests
 import streamlit as st
 from dotenv import load_dotenv
+from utils import format_timestamp
 
 load_dotenv()
 
 MANAGE_LABELS_URL = os.environ.get("MANAGE_LABELS_URL", "")
 
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
-st.title(APP_TITLE)
+st.title(APP_TITLE, anchor=False)
 st.subheader("Label Library Management")
 
 if not MANAGE_LABELS_URL:
@@ -76,12 +79,25 @@ if _pending:
 
 # --- Re-run all labels ---
 with st.expander("Re-run all labels"):
-    st.caption("Resets all labels and re-applies them to every segment. Use this to refresh reasoning or fix missed labels.")
-    if st.button("Re-run all labels", type="primary"):
-        result = call_labels_api("PATCH")
-        if result:
-            st.success(result.get("message", "Re-labeling queued."))
+    st.caption("Resets all labels and re-applies them to every segment.")
+
+    if not st.session_state.get('confirm_rerun_labels'):
+        if st.button("Re-run all labels", type="primary"):
+            st.session_state['confirm_rerun_labels'] = True
             st.rerun()
+    else:
+        st.warning("This resets every label and re-runs AI labeling across every segment in every video. Are you sure you want to continue?")
+        col_confirm, col_cancel = st.columns(2)
+        with col_confirm:
+            if st.button("Yes, re-run all labels", type="primary", use_container_width=True):
+                st.session_state['confirm_rerun_labels'] = False
+                result = call_labels_api("PATCH")
+                if result:
+                    st.success(result.get("message", "Re-labeling queued."))
+                st.rerun()
+        with col_cancel:
+            if st.button("Cancel", use_container_width=True):
+                st.session_state['confirm_rerun_labels'] = False
 
 # --- Tab layout ---
 tab_view, tab_add, tab_edit = st.tabs(["View Labels", "Add Label", "Edit Label"])
@@ -93,7 +109,7 @@ with tab_view:
         st.rerun()
 
     if library and "labels" in library:
-        st.caption(f"**Last Updated:** {library.get('last_updated', 'N/A')}")
+        st.caption(f"**Last Updated:** {format_timestamp(library.get('last_updated', 'N/A'))}")
 
         if not library["labels"]:
             st.info("No labels defined yet. Add labels in the 'Add Label' tab.")
@@ -104,8 +120,8 @@ with tab_view:
                 with st.expander(f"{i}. {label['name']}", expanded=False):
                     st.write(f"**Description:** {label['description']}")
                     st.write(f"**Label ID:** `{label['label_id']}`")
-                    st.write(f"**Created:** {label['created_at']}")
-                    st.write(f"**Updated:** {label['updated_at']}")
+                    st.write(f"**Created:** {format_timestamp(label['created_at'])}")
+                    st.write(f"**Last Updated:** {format_timestamp(label['updated_at'])}")
                     examples = label.get("examples", [])
                     if examples:
                         st.write(f"**Positive Examples ({len(examples)}/3):**")

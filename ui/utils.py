@@ -14,6 +14,7 @@ import streamlit as st
 import json
 import re
 import hashlib
+from datetime import datetime
 from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
 from dotenv import load_dotenv
@@ -26,7 +27,7 @@ __all__ = [
     "SEARCH_FN_URL",
     "SEARCH_ENDPOINT", "SEARCH_ADMIN_KEY", "SEARCH_INDEX_NAME",
     "AZURE_STORAGE_ACCOUNT", "AZURE_STORAGE_KEY", "PENDING_CONTAINER",
-    "ms_to_ts", "ms_to_seconds", "detect_url_type",
+    "ms_to_ts", "ms_to_seconds", "detect_url_type", "format_timestamp",
     "debug_check_index_schema", "get_index_schema",
     "get_stored_videos", "delete_video_by_id", "get_source_url_for_video",
     "generate_video_id", "get_box_audio_url", "fetch_box_audio_bytes",
@@ -59,6 +60,22 @@ def ms_to_ts(ms: int) -> str:
 
 def ms_to_seconds(ms: int) -> int:
     return max(0, int(ms // 1000))
+
+
+def format_timestamp(value: str) -> str:
+    """
+    Turn a stored ISO timestamp (e.g. '2026-08-24T12:34:56.789Z') into
+    something a person can actually read at a glance, e.g.
+    'Aug 24, 2026, 12:34 PM UTC'. Returns the value unchanged if it isn't
+    a parseable timestamp (covers 'unknown' and similar placeholders).
+    """
+    if not value or not isinstance(value, str):
+        return value or "unknown"
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt.strftime("%b %d, %Y, %I:%M %p UTC")
+    except ValueError:
+        return value
 
 
 def detect_url_type(url: str) -> str:

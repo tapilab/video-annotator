@@ -16,7 +16,7 @@ TRANSCRIBE_URL = os.environ.get("TRANSCRIBE_URL", "")
 EMBED_INDEX_URL = os.environ.get("EMBED_INDEX_URL", "")
 
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
-st.title(APP_TITLE)
+st.title(APP_TITLE, anchor=False)
 st.subheader("⚙️ System Diagnostics")
 st.info("Check system configuration and troubleshoot issues")
 

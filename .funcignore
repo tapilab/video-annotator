@@ -1,0 +1,16 @@
+.venv/
+.git/
+.github/
+ui/
+tests/
+docs/
+scripts/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+local.settings.json
+.env
+*.env
+videos.jsonl
+pipeline_state.json
