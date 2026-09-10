@@ -176,14 +176,14 @@ elif source_type == "Upload from URL":
             if "/file/" in url_input:
                 st.warning(
                     "📦 **Box viewer link detected.** "
-                    "Attempting automatic download — this works for publicly shared files. "
-                    "If it fails, click the **Download (↓)** button on the Box page "
-                    "and paste the resulting `shared/static/...` URL here instead."
-                )
+                    "Please ensure the the file is shared to 'people with the link', 'can view or download'")
             else:
                 st.info("📦 Box URL detected")
-        else:
+        elif detected_source_type == "direct":
             st.success("✅ URL validated")
+        else:
+            media_url = None
+            st.error("❌ This doesn't look like a valid YouTube, Box, or direct media link.")
 
 # ---------------------------------------------------------------------------
 # Batch CSV Upload

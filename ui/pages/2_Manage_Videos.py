@@ -53,24 +53,18 @@ tab_browse, tab_pending = st.tabs(["Browse & Manage", "Pending Uploads"])
 # Browse, filter, delete, export
 # ---------------------------------------------------------------------------
 with tab_browse:
-    st.subheader("Filter Videos")
-    col1, col2 = st.columns(2)
-    with col1:
-        filter_video_id = st.text_input("Filter by Video ID (optional)")
-    with col2:
-        filter_options = ["All", "youtube", "box", "direct", "upload", "unknown"]
-        filter_source_type = st.selectbox("Filter by Source Type", options=filter_options)
+    st.subheader("Search Videos")
+    filter_video_id = st.text_input("Search by Video ID (optional)")
 
-    load_clicked = st.button("Load Videos", type="primary")
+    load_clicked = st.button("Submit", type="primary")
 
     # Auto-load every video the first time this tab is visited, so there's
     # already something to look through instead of an empty page.
     if load_clicked or not st.session_state.get('videos_loaded'):
         with st.spinner("Retrieving videos..."):
-            source_type_arg = None if filter_source_type == "All" else filter_source_type
             videos = get_stored_videos(
                 video_id=filter_video_id.strip() or None,
-                source_type=source_type_arg,
+                source_type=None,
                 include_missing=True,
                 limit=1000,
             )

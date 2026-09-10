@@ -49,7 +49,7 @@ for key, value in defaults.items():
 # =============================================================================
 # METADATA CACHE
 # =============================================================================
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=120)
 def load_all_video_metadata() -> Dict[str, Dict]:
     """Fetch all videos with their source_url and return a dict keyed by video_id."""
     try:
@@ -60,7 +60,7 @@ def load_all_video_metadata() -> Dict[str, Dict]:
         return {}
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def get_labels() -> list:
     if not MANAGE_LABELS_URL:
         return []
@@ -181,7 +181,7 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
         if start_link == "#":
             st.error("❌ No source URL stored — cannot generate playback link")
         else:
-            link_cols = st.columns([2, 2, 3])
+            link_cols = st.columns([2, 2])
 
             with link_cols[0]:
                 if link_type == "Box (download)":
@@ -196,16 +196,6 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
             with link_cols[1]:
                 if end_ms and end_ms != start_ms:
                     st.info(f"⏱ **{ms_to_ts(start_ms)}** – **{ms_to_ts(end_ms)}**")
-                else:
-                    st.empty()
-
-            with link_cols[2]:
-                if source_url:
-                    display_url = (source_url[:45] + "…") if len(source_url) > 45 else source_url
-                    st.caption(f"🔗 [{display_url}]({source_url})")
-                    st.caption(f"from {source_origin}")
-                else:
-                    st.caption("❌ No source URL")
 
     return {
         "source_origin": source_origin if source_url else "missing",
@@ -220,17 +210,17 @@ def _render_how_to_use() -> None:
     with st.expander("How to use this app", expanded=False):
         st.markdown(
             """
-            1. **Upload**: Open the **Upload** page and submit either YouTube links or a CSV file with one video URL per row.
-            2. **Manage videos**: Use **Manage Videos** to confirm indexing status and clean up records when needed.
-            3. **Create labels**: In **Label Management**, define your own annotation goals (for example, vaccine skepticism or trust messaging).
-            4. **Run labeling**: Use **Label Evaluation** to apply the LLM annotator to indexed segments for each selected label.
-            5. **Search and filter**: Return here to search by keyword, filter by `video_id`, and filter by predicted labels.
-            6. **Inspect evidence**: Expand any result card to read the excerpt, review confidence/rationale, and jump directly to timestamps.
+            1. **Upload**: Open the **Upload** page and submit a file from your computer, a URL (YouTube, Box, or a direct link), or a CSV with one video URL per row for a batch upload.
+            2. **Check on progress**: Use **Manage Videos** → **Pending Uploads** to see which videos are still transcribing, and **Browse & Manage** to view, delete, or export videos that are already done.
+            3. **Create labels**: In **Label Management**, define your own labels (for example, vaccine skepticism or trust messaging), with an optional description and example passages. Adding or editing a label automatically queues it to be applied to every video's segments.
+            4. **Check labeling accuracy** (optional): **Label Evaluation** is a separate tool for testing how well the AI's labeling matches your own judgment — upload a CSV of text you've manually labeled yourself, and it reports precision/recall/F1 per label.
+            5. **Search and filter**: Return here to search by keyword or `video_id`, and filter by predicted labels.
+            6. **Inspect evidence**: Expand any result card to read the excerpt, review the AI's rationale for each applied label, and jump directly to the right timestamp in the original video.
 
             **Tips**
             - You can search with just labels (no text query) by selecting one or more labels in the sidebar.
             - For hybrid search, keep `k` roughly 4x `top` for stronger recall.
-            - Use the cache refresh button if new videos were recently ingested.
+            - Video metadata refreshes automatically every couple of minutes, or click the sidebar's refresh button for it immediately.
             """
         )
 
@@ -249,7 +239,7 @@ def render_search_page() -> None:
     with st.sidebar:
         st.header("Search Settings")
         mode = st.selectbox("Mode", ["keyword", "hybrid", "vector"], index=1)
-        video_id_filter = st.text_input("Filter by video_id", value="")
+        video_id_filter = st.text_input("Search by video_id", value="")
         label_names = get_label_names()
         selected_labels = st.multiselect("Filter by labels", label_names)
         if selected_labels:
