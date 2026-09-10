@@ -189,7 +189,6 @@ elif source_type == "Upload from URL":
 # Batch CSV Upload
 # ---------------------------------------------------------------------------
 elif source_type == "📁 Batch CSV Upload":
-    st.subheader("📁 Batch Process Videos from CSV")
 
     csv_file = st.file_uploader(
         "Upload CSV file",
@@ -339,6 +338,6 @@ if st.button(button_text, type="primary", disabled=not can_process):
                 f"""
                 ✅ **Submitted!**
                 - Video ID: `{vid}`
-                - "Check the **Pending Uploads** tab in the **Manage Videos** page to track progress."
+                - Check the **Pending Uploads** tab in the **Manage Videos** page to track progress.
                 """
             )

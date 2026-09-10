@@ -54,7 +54,7 @@ tab_browse, tab_pending = st.tabs(["Browse & Manage", "Pending Uploads"])
 # ---------------------------------------------------------------------------
 with tab_browse:
     st.subheader("Search Videos")
-    filter_video_id = st.text_input("Search by Video ID (optional)")
+    filter_video_id = st.text_input("Search by Video ID")
 
     load_clicked = st.button("Submit", type="primary")
 

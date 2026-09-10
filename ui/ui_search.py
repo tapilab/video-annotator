@@ -219,7 +219,6 @@ def _render_how_to_use() -> None:
 
             **Tips**
             - You can search with just labels (no text query) by selecting one or more labels in the sidebar.
-            - For hybrid search, keep `k` roughly 4x `top` for stronger recall.
             - Video metadata refreshes automatically every couple of minutes, or click the sidebar's refresh button for it immediately.
             """
         )

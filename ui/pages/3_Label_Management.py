@@ -193,10 +193,10 @@ with tab_edit:
                             "description": edit_desc,
                             "examples": examples,
                         })
-                    if result and "label_id" in result:
-                        st.success("Label updated!")
-                        st.info("Labeling queued — updated labels will appear in search results shortly.")
-                        st.rerun()
+                        if result and "label_id" in result:
+                            st.success("Label updated!")
+                            st.info("Labeling queued — updated labels will appear in search results shortly.")
+                            st.rerun()
 
                 if delete_submit:
                     result = call_labels_api("DELETE", {"label_id": label["label_id"]})
