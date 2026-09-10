@@ -25,13 +25,13 @@ Create `ui/.env` (do not commit):
 SEARCH_FN_URL=https://<your-function-app>.azurewebsites.net/api/SearchSegments?code=...
 MANAGE_LABELS_URL=https://<your-function-app>.azurewebsites.net/api/ManageLabels?code=...
 EVAL_LABELS_URL=https://<your-function-app>.azurewebsites.net/api/EvalLabels?code=...
+STAGE_MEDIA_URL=https://<your-function-app>.azurewebsites.net/api/StageMedia?code=...
+TRANSCRIBE_URL=https://<your-function-app>.azurewebsites.net/api/TranscribeHttp?code=...
+EMBED_INDEX_URL=https://<your-function-app>.azurewebsites.net/api/EmbedAndIndex?code=...
 SEARCH_ENDPOINT=https://<your-search-service>.search.windows.net
-SEARCH_KEY=<your-search-query-key>
+SEARCH_ADMIN_KEY=<your-search-admin-key>
 AZURE_STORAGE_ACCOUNT=<your-storage-account>
 AZURE_STORAGE_KEY=<your-storage-key>
-SPEECH_KEY=<your-azure-speech-key>
-AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com
-AZURE_OPENAI_KEY=<your-azure-openai-key>
 ```
 
 ### 3) Run Streamlit (IMPORTANT: use python -m)
@@ -86,13 +86,13 @@ az containerapp update \
     SEARCH_FN_URL="https://<your-function-app>.azurewebsites.net/api/SearchSegments?code=..." \
     MANAGE_LABELS_URL="https://<your-function-app>.azurewebsites.net/api/ManageLabels?code=..." \
     EVAL_LABELS_URL="https://<your-function-app>.azurewebsites.net/api/EvalLabels?code=..." \
+    STAGE_MEDIA_URL="https://<your-function-app>.azurewebsites.net/api/StageMedia?code=..." \
+    TRANSCRIBE_URL="https://<your-function-app>.azurewebsites.net/api/TranscribeHttp?code=..." \
+    EMBED_INDEX_URL="https://<your-function-app>.azurewebsites.net/api/EmbedAndIndex?code=..." \
     SEARCH_ENDPOINT="https://<your-search-service>.search.windows.net" \
-    SEARCH_KEY="<your-search-query-key>" \
+    SEARCH_ADMIN_KEY="<your-search-admin-key>" \
     AZURE_STORAGE_ACCOUNT="<your-storage-account>" \
-    AZURE_STORAGE_KEY="<your-storage-key>" \
-    SPEECH_KEY="<your-azure-speech-key>" \
-    AZURE_OPENAI_ENDPOINT="https://<your-resource>.openai.azure.com" \
-    AZURE_OPENAI_KEY="<your-azure-openai-key>"
+    AZURE_STORAGE_KEY="<your-storage-key>"
 ```
 
 ### Scale to zero (optional)

@@ -4,4 +4,5 @@ azure-storage-queue
 dotenv
 openai
 requests
+yt-dlp
 

@@ -82,7 +82,7 @@ def main():
             "auto_segment": True,
             "segment_ms": 30000,
         })
-        state[vid] = {"job_url": resp["job_url"], "status": "submitted"}
+        state[vid] = {"job_url": resp["job_url"], "status": "submitted", "media_url": item["media_url"]}
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
 
@@ -110,7 +110,11 @@ def main():
                     segments_blob = f"{SEGMENTS_CONTAINER}/{vid}.json"
                 state[vid]["segments_blob"] = segments_blob
                 print(f"Indexing {vid} from {segments_blob} ...")
-                idx = post(EMBED_INDEX_URL, {"segments_blob": segments_blob}, timeout=180)
+                idx = post(EMBED_INDEX_URL, {
+                    "segments_blob": segments_blob,
+                    "source_url": state[vid].get("media_url", ""),
+                    "source_type": "box",
+                }, timeout=180)
                 state[vid]["status"] = "indexed"
                 state[vid]["index_result"] = idx
             else:

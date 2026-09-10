@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import traceback
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import azure.functions as func
@@ -124,6 +125,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=400,
             )
 
+        source_url = body.get("source_url") or ""
+        source_type = body.get("source_type") or "unknown"
+        processed_at = datetime.now(timezone.utc).isoformat()
+
         # Prepare texts to embed
         # (Skip empty text segments to save money; still index them with empty embedding if you prefer.)
         nonempty = [s for s in segments if (s.get("text") or "").strip()]
@@ -148,6 +153,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 "segment_key": f"{video_id}_{seg_id}",
                 "video_id": video_id,
                 "segment_id": seg_id,
+                "source_url": source_url,
+                "source_type": source_type,
+                "processed_at": processed_at,
                 "start_ms": int(s.get("start_ms", 0)),
                 "end_ms": int(s.get("end_ms", 0)),
                 "text": (s.get("text") or "").strip(),
