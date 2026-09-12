@@ -258,7 +258,8 @@ def render_search_page() -> None:
     PAGE_SIZE = 10
 
     q  = st.text_input("Query", value="", placeholder="e.g., measles misinformation")
-    go = st.button("Search", type="primary", disabled=(not q.strip() and not selected_labels))
+    can_search = bool(q.strip() or selected_labels or video_id_filter.strip())
+    go = st.button("Search", type="primary", disabled=not can_search)
 
     if go:
         params = {"q": q.strip(), "mode": mode, "top": PAGE_SIZE}
