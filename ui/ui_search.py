@@ -93,7 +93,7 @@ def call_search_api(payload: dict) -> dict:
 # =============================================================================
 # RESULT CARD RENDERER
 # =============================================================================
-def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
+def render_hit(i: int, h: dict, metadata_cache: dict) -> None:
     """Render a single search result card."""
     start_ms = h.get("start_ms", 0)
     end_ms   = h.get("end_ms",   0)
@@ -102,11 +102,9 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
     score    = h.get("score", None)
 
     # Resolve source URL: search result first, then metadata cache
-    source_url    = h.get("source_url")
-    source_origin = "search"
+    source_url = h.get("source_url")
     if not source_url and vid in metadata_cache:
-        source_url    = metadata_cache[vid].get("source_url")
-        source_origin = "cache"
+        source_url = metadata_cache[vid].get("source_url")
 
     source_type = h.get("source_type")
 
@@ -121,8 +119,8 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
     # Expander header
     ts_range    = f"{ms_to_ts(start_ms)} → {ms_to_ts(end_ms)}"
     display_vid = vid if len(vid) < 28 else f"{vid[:25]}..."
-    score_str   = (f"  |  score={score:.3f}" if isinstance(score, (int, float))
-                   else f"  |  score={score}") if score is not None else ""
+    score_str   = (f"  |  relevance={score:.3f}" if isinstance(score, (int, float))
+                   else f"  |  relevance={score}") if score is not None else ""
     seg_str     = f"  |  seg={seg}" if seg else ""
     header      = f"{i}. [{ts_range}]  {display_vid}{seg_str}{score_str}"
 
@@ -177,7 +175,10 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
 
         # ── Link row ──────────────────────────────────────────────────────
         if start_link == "#":
-            st.error("❌ No source URL stored — cannot generate playback link")
+            if link_type == "Internal storage (no public link)":
+                st.info("📁 This video was uploaded directly — no playback link is available for it.")
+            else:
+                st.warning("No playback link available yet — try the sidebar's refresh cache button.")
         else:
             link_cols = st.columns([2, 2])
 
@@ -194,11 +195,6 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
             with link_cols[1]:
                 if end_ms and end_ms != start_ms:
                     st.info(f"⏱ **{ms_to_ts(start_ms)}** – **{ms_to_ts(end_ms)}**")
-
-    return {
-        "source_origin": source_origin if source_url else "missing",
-        "link_type":     link_type,
-    }
 
 
 # =============================================================================
@@ -313,16 +309,9 @@ def render_search_page() -> None:
     st.caption(f"Total: {total_count} | Page {page + 1} of {total_pages}")
 
     metadata_cache = st.session_state['video_metadata_cache']
-    source_stats   = {"from_search": 0, "from_cache": 0, "missing": 0}
-    type_counts    = {}
 
     for i, h in enumerate(hits, start=page * PAGE_SIZE + 1):
-        stats  = render_hit(i, h, metadata_cache)
-        origin = stats["source_origin"]
-        source_stats["missing" if origin == "missing" else
-                     "from_cache" if origin == "cache" else "from_search"] += 1
-        lt = stats["link_type"]
-        type_counts[lt] = type_counts.get(lt, 0) + 1
+        render_hit(i, h, metadata_cache)
 
     # ── Pagination ────────────────────────────────────────────────────────
     st.divider()
@@ -341,21 +330,6 @@ def render_search_page() -> None:
                 st.session_state['search_page']    += 1
                 st.session_state['search_loading']  = True
                 st.rerun()
-
-    # ── Summary footer ────────────────────────────────────────────────────
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.caption(f"From search result: {source_stats['from_search']}")
-    with col2:
-        st.caption(f"From metadata cache: {source_stats['from_cache']}")
-    with col3:
-        if source_stats['missing'] > 0:
-            st.caption(f"⚠ Missing source URL: {source_stats['missing']}")
-        else:
-            st.caption("✅ All results have source URLs")
-
-    type_summary = ", ".join(f"{k}: {v}" for k, v in type_counts.items())
-    st.caption(f"Link types: {type_summary}")
 
     _render_how_to_use()
 
