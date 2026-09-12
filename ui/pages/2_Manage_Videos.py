@@ -142,9 +142,19 @@ with tab_browse:
 
                     with col_btn:
                         btn_key = f"del_{vid}_{i}_{stype}"
-                        if st.button("🗑️", key=btn_key, help=f"Delete {vid}"):
-                            st.session_state.pending_delete = vid
-                            st.rerun()
+                        confirm_key = f"confirm_delete_{vid}"
+                        if st.session_state.get(confirm_key):
+                            if st.button("✅ Confirm", key=f"confirm_{btn_key}"):
+                                st.session_state[confirm_key] = False
+                                st.session_state.pending_delete = vid
+                                st.rerun()
+                            if st.button("✖️ Cancel", key=f"cancel_{btn_key}"):
+                                st.session_state[confirm_key] = False
+                                st.rerun()
+                        else:
+                            if st.button("🗑️", key=btn_key, help=f"Delete {vid}"):
+                                st.session_state[confirm_key] = True
+                                st.rerun()
 
                     st.divider()
 
