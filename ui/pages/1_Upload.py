@@ -289,7 +289,7 @@ if st.button(button_text, type="primary", disabled=not can_process):
             for url in urls:
                 url_type = detect_url_type(url)
                 src_type = "youtube" if url_type == "youtube" else "box" if url_type == "box" else "direct"
-                vid = generate_video_id(f"batch_{url}")
+                vid = generate_video_id(url)
 
                 _, error = submit_video(src_type, url, vid)
                 results.append({"video_id": vid, "url": url, "source_type": src_type, "error": error or ""})
