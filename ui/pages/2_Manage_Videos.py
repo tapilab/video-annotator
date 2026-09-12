@@ -208,7 +208,8 @@ with tab_pending:
                     else:
                         st.info(f"⏳ {vid}: still {status or 'processing'}")
                 except Exception as e:
-                    st.warning(f"Could not check {vid}: {type(e).__name__}: {e}")
+                    print(f"Pending upload check failed for {vid}: {e}")
+                    st.warning(f"Could not check {vid} — the service didn't respond. Try again in a moment.")
 
             save_pending_uploads(updated_pending)
             st.rerun()

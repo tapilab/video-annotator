@@ -56,7 +56,8 @@ def load_all_video_metadata() -> Dict[str, Dict]:
         videos = get_stored_videos(limit=10000)
         return {v['video_id']: v for v in videos if v.get('video_id')}
     except Exception as e:
-        st.error(f"Failed to load video metadata: {e}")
+        print(f"load_all_video_metadata failed: {e}")
+        st.error("Couldn't load video metadata — the search service didn't respond. Please try again in a moment.")
         return {}
 
 
@@ -293,7 +294,8 @@ def render_search_page() -> None:
             try:
                 data = call_search_api(payload)
             except Exception as e:
-                st.error(f"Search failed: {e}")
+                print(f"Search failed: {e}")
+                st.error("Search failed — the search service didn't respond. Please try again in a moment.")
                 st.session_state['search_loading'] = False
                 st.stop()
         st.session_state['search_hits']    = [h for h in data.get("hits", []) if h.get("video_id") and h.get("text")]

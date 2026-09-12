@@ -79,7 +79,8 @@ with st.spinner(f"Running GPT on {len(test_cases)} rows..."):
             st.stop()
         result = r.json()
     except requests.exceptions.RequestException as e:
-        st.error(f"Connection error: {e}")
+        print(f"Label evaluation request failed: {e}")
+        st.error("Connection error — the evaluation service didn't respond. Please try again in a moment.")
         st.stop()
 
 rows = result.get("rows", [])

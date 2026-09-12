@@ -262,7 +262,8 @@ def get_stored_videos(
                 break
         return list(all_videos.values())[:limit]
     except Exception as e:
-        st.error(f"Failed to retrieve videos: {e}")
+        print(f"get_stored_videos failed: {e}")
+        st.error("Couldn't retrieve videos right now — the search service didn't respond. Please try again in a moment.")
         return []
 
 
@@ -312,7 +313,8 @@ def delete_video_by_id(video_id: str) -> bool:
         r.raise_for_status()
         return True
     except Exception as e:
-        st.error(f"Delete failed: {e}")
+        print(f"delete_video_by_id failed for {video_id}: {e}")
+        st.error("Delete failed — the search service didn't respond. Please try again in a moment.")
         return False
 
 
@@ -338,7 +340,8 @@ def get_pending_uploads() -> Dict[str, Any]:
     except ResourceNotFoundError:
         return {}  # no pending uploads yet - this is the normal, expected case
     except Exception as e:
-        st.error(f"Could not read pending uploads: {type(e).__name__}: {e}")
+        print(f"get_pending_uploads failed: {e}")
+        st.error("Couldn't check pending uploads right now — storage didn't respond. Please try again in a moment.")
         return {}
 
 

@@ -54,7 +54,8 @@ def call_labels_api(method: str = "GET", payload: dict = None) -> dict:
             get_label_library.clear()
         return data
     except requests.exceptions.RequestException as e:
-        st.error(f"Connection error: {e}")
+        print(f"call_labels_api failed: {e}")
+        st.error("Connection error — the label service didn't respond. Please try again in a moment.")
         return {}
 
 

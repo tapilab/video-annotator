@@ -71,7 +71,8 @@ def stage_media(source_type: str, video_id: str, url: str = None,
             return None, _error_from_response(r)
         return r.json().get("media_url"), None
     except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+        print(f"stage_media failed for {video_id}: {e}")
+        return None, "Could not reach the staging service. Please try again in a moment."
 
 
 def submit_transcription(media_url: str, video_id: str):
@@ -86,7 +87,8 @@ def submit_transcription(media_url: str, video_id: str):
             return None, _error_from_response(r)
         return r.json().get("job_url"), None
     except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+        print(f"submit_transcription failed for {video_id}: {e}")
+        return None, "Could not reach the transcription service. Please try again in a moment."
 
 
 def submit_video(source_type: str, source_url: str, video_id: str,
