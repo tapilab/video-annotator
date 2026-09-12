@@ -178,7 +178,7 @@ elif source_type == "Upload from URL":
             if "/file/" in url_input:
                 st.warning(
                     "📦 **Box viewer link detected.** "
-                    "Please ensure the the file is shared to 'people with the link', 'can view or download'")
+                    "Please ensure the file is shared to 'people with the link', 'can view or download'")
             else:
                 st.info("📦 Box URL detected")
         elif detected_source_type == "direct":
