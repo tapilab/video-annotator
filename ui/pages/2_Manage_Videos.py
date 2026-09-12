@@ -17,6 +17,7 @@ from utils import (
     get_pending_uploads,
     save_pending_uploads,
     format_timestamp,
+    elapsed_since,
 )
 
 TRANSCRIBE_URL = os.environ.get("TRANSCRIBE_URL", "")
@@ -47,7 +48,9 @@ if st.session_state.get('pending_delete'):
     else:
         st.session_state.delete_error = vid_to_delete
 
-tab_browse, tab_pending = st.tabs(["Browse & Manage", "Pending Uploads"])
+pending = get_pending_uploads()
+pending_tab_label = f"Pending Uploads ({len(pending)})" if pending else "Pending Uploads"
+tab_browse, tab_pending = st.tabs(["Browse & Manage", pending_tab_label])
 
 # ---------------------------------------------------------------------------
 # Browse, filter, delete, export
@@ -179,50 +182,75 @@ with tab_browse:
 # progress bar: check back here instead of watching a live status screen.
 # ---------------------------------------------------------------------------
 with tab_pending:
-    pending = get_pending_uploads()
+    # A rerun happens right after checking (below), which would otherwise wipe
+    # out the per-video results before anyone could see them - so they're
+    # stashed in session_state and rendered here, once, after the rerun.
+    check_summary = st.session_state.pop('pending_check_summary', None)
+    if check_summary:
+        st.info(
+            f"Checked {check_summary['checked']}: {check_summary['finished']} finished, "
+            f"{check_summary['still_processing']} still processing, {check_summary['failed']} failed."
+        )
+        for level, msg in check_summary['log']:
+            getattr(st, level)(msg)
 
     if not pending:
         st.caption("No videos currently processing.")
     else:
         if st.button("Check Pending Uploads"):
             updated_pending = dict(pending)
-            for vid, info in pending.items():
-                try:
-                    r = requests.post(
-                        TRANSCRIBE_URL,
-                        json={"job_url": info["job_url"], "video_id": vid},
-                        timeout=60,
-                    )
-                    resp = r.json() if r.text else {}
-                    status = resp.get("status")
-
-                    if status == "Succeeded":
-                        segments_blob = resp.get("segments_blob")
-                        idx_r = requests.post(
-                            EMBED_INDEX_URL,
-                            json={
-                                "segments_blob": segments_blob,
-                                "source_url": info.get("source_url", ""),
-                                "source_type": info.get("source_type", "unknown"),
-                            },
-                            timeout=180,
+            finished = still_processing = failed = 0
+            log = []
+            with st.spinner(f"Checking {len(pending)} pending upload(s)..."):
+                for vid, info in pending.items():
+                    try:
+                        r = requests.post(
+                            TRANSCRIBE_URL,
+                            json={"job_url": info["job_url"], "video_id": vid},
+                            timeout=60,
                         )
-                        if idx_r.status_code < 400:
-                            del updated_pending[vid]
-                            st.success(f"✅ {vid} finished processing and is now searchable.")
-                        else:
-                            st.error(f"❌ {vid} transcribed but indexing failed: {idx_r.text}")
-                    elif status == "Failed":
-                        st.error(f"❌ {vid} failed: {resp}")
-                        del updated_pending[vid]
-                    else:
-                        st.info(f"⏳ {vid}: still {status or 'processing'}")
-                except Exception as e:
-                    print(f"Pending upload check failed for {vid}: {e}")
-                    st.warning(f"Could not check {vid} — the service didn't respond. Try again in a moment.")
+                        resp = r.json() if r.text else {}
+                        status = resp.get("status")
 
+                        if status == "Succeeded":
+                            segments_blob = resp.get("segments_blob")
+                            idx_r = requests.post(
+                                EMBED_INDEX_URL,
+                                json={
+                                    "segments_blob": segments_blob,
+                                    "source_url": info.get("source_url", ""),
+                                    "source_type": info.get("source_type", "unknown"),
+                                },
+                                timeout=180,
+                            )
+                            if idx_r.status_code < 400:
+                                del updated_pending[vid]
+                                finished += 1
+                                log.append(("success", f"✅ {vid} finished processing and is now searchable."))
+                            else:
+                                failed += 1
+                                log.append(("error", f"❌ {vid} transcribed but indexing failed: {idx_r.text}"))
+                        elif status == "Failed":
+                            failed += 1
+                            log.append(("error", f"❌ {vid} failed: {resp}"))
+                            del updated_pending[vid]
+                        else:
+                            still_processing += 1
+                            log.append(("info", f"⏳ {vid}: still {status or 'processing'}"))
+                    except Exception as e:
+                        print(f"Pending upload check failed for {vid}: {e}")
+                        still_processing += 1
+                        log.append(("warning", f"Could not check {vid} — the service didn't respond. Try again in a moment."))
+
+            st.session_state['pending_check_summary'] = {
+                "checked": len(pending),
+                "finished": finished,
+                "still_processing": still_processing,
+                "failed": failed,
+                "log": log,
+            }
             save_pending_uploads(updated_pending)
             st.rerun()
 
         for vid, info in pending.items():
-            st.text(f"• {vid} — submitted {format_timestamp(info.get('submitted_at', 'unknown'))} ({info.get('source_type', 'unknown')})")
+            st.text(f"• {vid} — submitted {elapsed_since(info.get('submitted_at', ''))} ({info.get('source_type', 'unknown')})")
