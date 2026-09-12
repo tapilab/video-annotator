@@ -33,19 +33,3 @@ cols = st.columns(2)
 for i, (name, status) in enumerate(config_checks.items()):
     icon = "✅" if status else "❌"
     cols[i % 2].write(f"{icon} {name}: {'OK' if status else 'Not configured'}")
-
-# Debug info
-st.markdown("---")
-st.subheader("Debug Information")
-
-with st.expander("Session State"):
-    st.json({
-        k: str(v)[:100] + "..." if len(str(v)) > 100 else v
-        for k, v in st.session_state.items()
-    })
-
-with st.expander("Recent Processing Debug"):
-    if st.session_state.get('debug_info'):
-        st.json(st.session_state['debug_info'])
-    else:
-        st.info("No debug info yet. Process a video first.")

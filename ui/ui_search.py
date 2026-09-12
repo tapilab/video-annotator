@@ -26,11 +26,8 @@ st.set_page_config(page_title=APP_TITLE, layout="wide")
 defaults = {
     'index_schema_cache': None,
     'stored_videos_cache': None,
-    'debug_info': {},
-    'video_to_delete': None,
     'delete_success': False,
     'videos_loaded': False,
-    'debug_poll_url': None,
     'video_metadata_cache': {},
     'metadata_loaded': False,
     'pending_delete': None,
