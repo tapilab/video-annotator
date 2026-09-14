@@ -322,6 +322,17 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 if label.get("is_active", True):
                     label["applied"] = False
                     count += 1
+
+            # Re-queue every inactive label for stripping too - otherwise a label
+            # only gets removed from segments on the one run right after it's
+            # deactivated, and any later full re-run silently leaves it in place.
+            inactive_names = {l["name"] for l in library["labels"] if not l.get("is_active", True)}
+            if inactive_names:
+                removed = library.setdefault("removed_labels", [])
+                for name in inactive_names:
+                    if name not in removed:
+                        removed.append(name)
+
             library["last_updated"] = now
             _write_label_json(library)
             threading.Thread(target=_start_labeling_job, args=(library,), daemon=True).start()
