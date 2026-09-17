@@ -45,11 +45,22 @@ import azure.functions as func
 import requests
 from azure.storage.blob import BlobServiceClient
 from openai import OpenAI
+from pydantic import BaseModel
 
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 10))
 GPT_WORKERS = int(os.environ.get("GPT_WORKERS", 5))
 INDEX_BATCH_SIZE = 500
 SEARCH_API_VERSION = "2024-05-01-preview"
+
+
+class SegmentDecision(BaseModel):
+    segment_id: str
+    applied: bool
+    rationale: str
+
+
+class LabelJudgment(BaseModel):
+    results: List[SegmentDecision]
 
 
 def _blob_service() -> BlobServiceClient:
@@ -107,11 +118,20 @@ def _fetch_existing_labels(segment_keys: List[str]) -> Dict[str, Dict]:
     return existing
 
 
-def _call_gpt(label_def: Dict, seg_inputs: List[Dict]) -> List[Dict]:
-    """
-    Call GPT-4o-mini via proxy to judge one label against a batch of segments.
-    Returns list of {segment_id, applied, rationale}.
-    """
+def _format_label(label_def: Dict) -> str:
+    description = label_def["description"]
+    examples = label_def.get("examples") or []
+    if examples:
+        description += " " + " ".join(f'For example, the {ex}.' for ex in examples)
+    return f"Name: {label_def['name']}\nDescription: {description}"
+
+
+def _format_segments(seg_inputs: List[Dict]) -> str:
+    return "\n".join(f"[{s['segment_id']}] {s['text']}" for s in seg_inputs)
+
+
+def _call_gpt(label_def: Dict, seg_inputs: List[Dict]) -> List[SegmentDecision]:
+    """Call GPT-4o-mini via proxy to judge one label against a batch of segments."""
     client = OpenAI(
         base_url=os.environ["PROXY_BASE_URL"],
         api_key="unused",
@@ -119,38 +139,29 @@ def _call_gpt(label_def: Dict, seg_inputs: List[Dict]) -> List[Dict]:
     )
 
     system_prompt = (
-        "You are a content labeler. Given ONE label definition and a set of video transcript "
-        "segments, decide whether that label applies to each segment. "
-        "Return a decision for EVERY segment. "
-        'Your response must be a JSON object with a "results" key containing an array.'
+        "You are a content labeler. You will be given one label, the label's definition, and a list of video transcript "
+        "segments. For every segment, decide whether the label applies (true if the segment "
+        "mentions, discusses, or is clearly related to the label topic; false otherwise) and give "
+        "a brief rationale either way. Judge every segment listed, including ones where the label "
+        "clearly does not apply."
     )
 
     user_prompt = (
-        f"Label:\n{json.dumps(label_def, ensure_ascii=False)}\n\n"
-        f"Segments:\n{json.dumps(seg_inputs, ensure_ascii=False)}\n\n"
-        "For each segment, return:\n"
-        '  - "applied": true if the segment mentions, discusses, or is clearly related to the label topic\n'
-        '  - "applied": false if the label does not apply\n'
-        '  - "rationale": a brief explanation of your decision either way\n'
-        "Note: where the label includes 'examples', use them as positive references for what the label looks like in practice.\n\n"
-        "Return:\n"
-        '{"results": [\n'
-        '  {"segment_id": "0000", "applied": true, "rationale": "explanation"},\n'
-        '  {"segment_id": "0001", "applied": false, "rationale": "explanation"}\n'
-        "]}"
+        f"LABEL\n{_format_label(label_def)}\n\n"
+        f"SEGMENTS\n{_format_segments(seg_inputs)}"
     )
 
-    resp = client.responses.create(
+    resp = client.responses.parse(
         model="gpt-4o-mini",
         input=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0,
-        text={"format": {"type": "json_object"}},
+        text_format=LabelJudgment,
     )
 
-    return json.loads(resp.output_text).get("results", [])
+    return resp.output_parsed.results
 
 
 def _process_label_batch(
@@ -168,12 +179,8 @@ def _process_label_batch(
 
     for attempt in range(2):
         try:
-            raw_results = _call_gpt(label_def, seg_inputs)
-            return {
-                r["segment_id"]: {"applied": bool(r.get("applied")), "rationale": r.get("rationale", "")}
-                for r in raw_results
-                if isinstance(r, dict) and "segment_id" in r
-            }
+            decisions = _call_gpt(label_def, seg_inputs)
+            return {d.segment_id: {"applied": d.applied, "rationale": d.rationale} for d in decisions}
         except Exception as e:
             if attempt == 1:
                 logging.warning(
