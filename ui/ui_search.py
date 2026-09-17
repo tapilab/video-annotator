@@ -208,7 +208,7 @@ def _render_how_to_use() -> None:
             2. **Check on progress**: Use **Manage Videos** → **Pending Uploads** to see which videos are still transcribing, and **Browse & Manage** to view, delete, or export videos that are already done.
             3. **Create labels**: In **Label Management**, define your own labels (for example, vaccine skepticism or trust messaging), with an optional description and example passages. Adding or editing a label automatically queues it to be applied to every video's segments.
             4. **Check labeling accuracy** (optional): **Label Evaluation** is a separate tool for testing how well the AI's labeling matches your own judgment — upload a CSV of text you've manually labeled yourself, and it reports precision/recall/F1 per label.
-            5. **Search and filter**: Return here to search by keyword or `video_id`, and filter by predicted labels.
+            5. **Search and filter**: Return here to search by keyword, then optionally narrow results to one `video_id` or filter by predicted labels.
             6. **Inspect evidence**: Expand any result card to read the excerpt, review the AI's rationale for each applied label, and jump directly to the right timestamp in the original video.
 
             **Tips**
@@ -252,8 +252,9 @@ def render_search_page() -> None:
     PAGE_SIZE = 10
 
     q  = st.text_input("Query", value="", placeholder="e.g., measles misinformation")
-    can_search = bool(q.strip() or selected_labels or video_id_filter.strip())
-    go = st.button("Search", type="primary", disabled=not can_search)
+    go = st.button("Search", type="primary", disabled=(not q.strip() and not selected_labels))
+    if video_id_filter.strip() and not q.strip() and not selected_labels:
+        st.caption("Add a keyword or select a label to search.")
 
     if go:
         params = {"q": q.strip(), "mode": mode, "top": PAGE_SIZE}
