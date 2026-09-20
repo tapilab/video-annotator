@@ -25,7 +25,8 @@ from typing import Any, Dict, Optional
 
 import azure.functions as func
 from azure.storage.blob import BlobServiceClient
-from azure.storage.queue import QueueClient
+
+from shared.labeling_queue import count_done, enqueue_labeling_job
 
 
 def _blob_service() -> BlobServiceClient:
@@ -72,74 +73,20 @@ def _read_labeling_status() -> Optional[Dict]:
         service = _blob_service()
         container = os.environ.get("LABELS_CONTAINER", "labels")
         bc = service.get_blob_client(container=container, blob="labeling_status.json")
-        return json.loads(bc.download_blob().readall())
+        status = json.loads(bc.download_blob().readall())
     except Exception:
         return None
+
+    if status.get("status") == "running" and status.get("round_id"):
+        status["completed"] = count_done(container, status["round_id"])
+    return status
 
 
 def _start_labeling_job(library: Dict[str, Any]) -> None:
     try:
-        _enqueue_labeling_job(library)
+        enqueue_labeling_job(library)
     except Exception as e:
         logging.exception(f"Failed to enqueue labeling job: {e}")
-
-
-def _enqueue_labeling_job(library: Dict[str, Any]) -> None:
-    """List all segment blobs, write a status blob, and enqueue one message per video."""
-    all_labels = library.get("labels", [])
-    active_labels = [l for l in all_labels if l.get("is_active", True)]
-    unapplied_labels = [l for l in active_labels if not l.get("applied", False)]
-    removed_label_names = set(library.get("removed_labels", []))
-
-    if not unapplied_labels and not removed_label_names:
-        return
-
-    label_defs = [{"name": l["name"], "description": l["description"], "examples": l.get("examples", [])} for l in unapplied_labels]
-    valid_names = [l["name"] for l in unapplied_labels]
-    strip_names = list({l["name"] for l in unapplied_labels} | removed_label_names)
-
-    service = _blob_service()
-    segments_container = os.environ.get("SEGMENTS_CONTAINER", "segments")
-    cc = service.get_container_client(segments_container)
-    blob_names = [b.name for b in cc.list_blobs() if b.name.endswith(".json")]
-    total = len(blob_names)
-
-    if total == 0:
-        return
-
-    labels_container = os.environ.get("LABELS_CONTAINER", "labels")
-    status = {
-        "status": "running",
-        "total": total,
-        "completed": 0,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-    }
-    status_bc = service.get_blob_client(container=labels_container, blob="labeling_status.json")
-    status_bc.upload_blob(json.dumps(status, ensure_ascii=False), overwrite=True)
-
-    account = os.environ["AZURE_STORAGE_ACCOUNT"]
-    key = os.environ["AZURE_STORAGE_KEY"]
-    queue_name = os.environ.get("LABEL_QUEUE_NAME", "label-jobs")
-
-    queue_client = QueueClient(
-        account_url=f"https://{account}.queue.core.windows.net",
-        queue_name=queue_name,
-        credential=key,
-    )
-    try:
-        queue_client.create_queue()
-    except Exception:
-        pass  # Already exists
-
-    for blob_name in blob_names:
-        message = json.dumps({
-            "blob_name": blob_name,
-            "label_defs": label_defs,
-            "valid_names": valid_names,
-            "strip_names": strip_names,
-            "total": total,
-        })
-        queue_client.send_message(message)
 
 
 def _validate_label_name(name: str, library: Dict[str, Any], exclude_id: Optional[str] = None) -> bool:
