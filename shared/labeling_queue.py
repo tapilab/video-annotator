@@ -15,6 +15,7 @@ by a blob lease so it happens exactly once.
 """
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -143,18 +144,31 @@ def enqueue_labeling_job(library: Dict[str, Any]) -> None:
         queue_client.send_message(message)
 
 
-def mark_video_done(labels_container: str, round_id: str, blob_name: str) -> None:
+def mark_video_done(labels_container: str, round_id: str, blob_name: str, failed_labels=()) -> None:
     """Mark one video done for this round. Each video writes to its own unique
-    path, so this can never conflict with any other video's write."""
+    path, so this can never conflict with any other video's write. The marker
+    records which labels had failed AI calls for this video."""
     service = _blob_service()
     bc = service.get_blob_client(container=labels_container, blob=f"progress/{round_id}/{blob_name}")
-    bc.upload_blob(b"1", overwrite=True)
+    bc.upload_blob(json.dumps({"failed_labels": sorted(failed_labels)}).encode(), overwrite=True)
 
 
 def count_done(labels_container: str, round_id: str) -> int:
     service = _blob_service()
     cc = service.get_container_client(labels_container)
     return sum(1 for _ in cc.list_blobs(name_starts_with=f"progress/{round_id}/"))
+
+
+def _failed_labels(service: BlobServiceClient, labels_container: str, round_id: str) -> set:
+    cc = service.get_container_client(labels_container)
+    failed = set()
+    for b in cc.list_blobs(name_starts_with=f"progress/{round_id}/"):
+        raw = service.get_blob_client(container=labels_container, blob=b.name).download_blob().readall()
+        try:
+            failed.update(json.loads(raw).get("failed_labels", []))
+        except (ValueError, AttributeError):
+            pass
+    return failed
 
 
 def try_finish_round(labels_container: str, round_id: str) -> None:
@@ -167,6 +181,10 @@ def try_finish_round(labels_container: str, round_id: str) -> None:
 
     if count_done(labels_container, round_id) < status["total"]:
         return
+
+    failed_labels = _failed_labels(service, labels_container, round_id)
+    if failed_labels:
+        logging.warning(f"Round {round_id} finished with failed AI calls for labels: {sorted(failed_labels)}")
 
     lease = None
     for attempt in range(5):
@@ -185,6 +203,7 @@ def try_finish_round(labels_container: str, round_id: str) -> None:
 
         status["status"] = "complete"
         status["completed"] = status["total"]
+        status["failed_labels"] = sorted(failed_labels)
         status_bc.upload_blob(json.dumps(status, ensure_ascii=False), overwrite=True, lease=lease)
 
         label_bc = service.get_blob_client(container=labels_container, blob="label_library.json")
@@ -194,6 +213,7 @@ def try_finish_round(labels_container: str, round_id: str) -> None:
         for l in library.get("labels", []):
             if l["name"] in applied_names:
                 l["applied"] = True
+                l["incomplete"] = l["name"] in failed_labels
         library["removed_labels"] = [n for n in library.get("removed_labels", []) if n not in stripped_names]
         label_bc.upload_blob(json.dumps(library, ensure_ascii=False, indent=2), overwrite=True)
     finally:

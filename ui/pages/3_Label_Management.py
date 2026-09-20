@@ -83,6 +83,13 @@ if _pending:
     else:
         st.warning("Labeling in progress — search results will update once complete. Refresh to check status.")
 
+_incomplete = [l["name"] for l in labels if l.get("incomplete")]
+if _incomplete:
+    st.warning(
+        f"Some AI calls failed for: {', '.join(_incomplete)}. Results for these labels may be missing "
+        "on some videos. To retry a label, open the Edit Label tab and click Update."
+    )
+
 # --- Re-run all labels ---
 with st.expander("Re-run all labels"):
     st.caption("Resets all labels and re-applies them to every segment.")
@@ -123,7 +130,7 @@ with tab_view:
             st.write(f"**Total Labels:** {len(library['labels'])}")
 
             for i, label in enumerate(library["labels"], 1):
-                with st.expander(f"{i}. {label['name']}", expanded=False):
+                with st.expander(f"{i}. {label['name']}{' (incomplete)' if label.get('incomplete') else ''}", expanded=False):
                     st.write(f"**Description:** {label['description']}")
                     st.write(f"**Label ID:** `{label['label_id']}`")
                     st.write(f"**Created:** {format_timestamp(label['created_at'])}")
