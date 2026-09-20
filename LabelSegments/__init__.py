@@ -2,17 +2,22 @@
 LabelSegments - Queue-triggered Azure Function for AI-powered segment labeling
 
 Triggered by a queue message (one per video) written by ManageLabels.
-Each invocation processes one video's segments, calls GPT, and indexes results.
-On completion of all videos, marks all labels as applied.
-Ensures Azure function doesn't time out before all segments are 
+Each invocation processes one video's segments against every label in
+label_defs, one label at a time: for each label, segments are chunked into
+small batches and GPT judges just that one label against that one batch.
+Results for all labels are accumulated in memory and written to the search
+index once per video, after every label has been processed.
+When a video finishes it records a progress marker, including any labels whose
+AI calls still failed after retries (those keep their old results on that video).
+The last video to finish marks that run's labels as applied, flags labels with
+failures as incomplete, and starts the next run if any are pending.
 
 Queue message format:
   {
     "blob_name": "vid_xyz_segments.json",
-    "label_defs": [{"name": ..., "description": ...}, ...],
-    "valid_names": ["Label1", ...],
-    "strip_names": ["Label1", "OldLabel", ...],
-    "total": 47
+    "round_id": "<uuid of the labeling run>",
+    "label_defs": [{"name": ..., "description": ..., "examples": [...]}, ...],
+    "strip_names": ["Label1", "OldLabel", ...]
   }
 
 Environment Variables:
@@ -25,7 +30,7 @@ Environment Variables:
   SEARCH_ENDPOINT         - Azure AI Search endpoint
   SEARCH_ADMIN_KEY        - Azure AI Search admin key
   SEARCH_INDEX            - Search index name (default: "segments")
-  BATCH_SIZE              - Segments per GPT call (default: 20)
+  BATCH_SIZE              - Segments per GPT call, per label (default: 10)
   GPT_WORKERS             - Parallel GPT calls per video (default: 5)
   LABEL_QUEUE_NAME        - Azure Storage Queue name (default: "label-jobs")
 """
@@ -34,18 +39,32 @@ import json
 import logging
 import os
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 import azure.functions as func
 import requests
 from azure.storage.blob import BlobServiceClient
 from openai import OpenAI
+from pydantic import BaseModel
 
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 20))
+from shared.labeling_queue import mark_video_done, try_finish_round
+
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 10))
 GPT_WORKERS = int(os.environ.get("GPT_WORKERS", 5))
 INDEX_BATCH_SIZE = 500
 SEARCH_API_VERSION = "2024-05-01-preview"
+
+
+class SegmentDecision(BaseModel):
+    segment_id: str
+    applied: bool
+    rationale: str
+
+
+class LabelJudgment(BaseModel):
+    results: List[SegmentDecision]
 
 
 def _blob_service() -> BlobServiceClient:
@@ -103,11 +122,20 @@ def _fetch_existing_labels(segment_keys: List[str]) -> Dict[str, Dict]:
     return existing
 
 
-def _call_gpt(label_defs: List[Dict], seg_inputs: List[Dict]) -> List[Dict]:
-    """
-    Call GPT-4o-mini via proxy to label segments against the given labels.
-    Returns list of {segment_id, labels: [{name, rationale}]}.
-    """
+def _format_label(label_def: Dict) -> str:
+    description = label_def["description"]
+    examples = label_def.get("examples") or []
+    if examples:
+        description += " " + " ".join(f'For example, the {ex}.' for ex in examples)
+    return f"Name: {label_def['name']}\nDescription: {description}"
+
+
+def _format_segments(seg_inputs: List[Dict]) -> str:
+    return "\n".join(f"[{s['segment_id']}] {s['text']}" for s in seg_inputs)
+
+
+def _call_gpt(label_def: Dict, seg_inputs: List[Dict]) -> List[SegmentDecision]:
+    """Call GPT-4o-mini via proxy to judge one label against a batch of segments."""
     client = OpenAI(
         base_url=os.environ["PROXY_BASE_URL"],
         api_key="unused",
@@ -115,81 +143,81 @@ def _call_gpt(label_defs: List[Dict], seg_inputs: List[Dict]) -> List[Dict]:
     )
 
     system_prompt = (
-        "You are a content labeler. Given label definitions and video transcript segments, "
-        "decide whether each label applies to each segment. "
-        "Return a decision for EVERY label for EVERY segment — including labels that do not apply. "
-        'Your response must be a JSON object with a "results" key containing an array.'
+        "You are a content labeler. You will be given one label, the label's definition, and a list of video transcript "
+        "segments. For every segment, decide whether the label applies. Mark true if the segment "
+        "directly mentions, discusses, or is obviously related to the label topic. Mark false if the label does not "
+        "mention, discuss, or if it is not related. Give a brief rationale either way. "
+        "Judge every segment listed, including ones where the label clearly does not apply."
     )
 
     user_prompt = (
-        f"Labels:\n{json.dumps(label_defs, ensure_ascii=False)}\n\n"
-        f"Segments:\n{json.dumps(seg_inputs, ensure_ascii=False)}\n\n"
-        "For each segment, return every label with:\n"
-        '  - "applied": true if the segment mentions, discusses, or is clearly related to the label topic\n'
-        '  - "applied": false if the label does not apply\n'
-        '  - "rationale": a brief explanation of your decision either way\n'
-        "Note: where a label includes 'examples', use them as positive references for what the label looks like in practice.\n\n"
-        "Return:\n"
-        '{"results": [\n'
-        '  {"segment_id": "0000", "labels": [\n'
-        '    {"name": "LabelName", "applied": true, "rationale": "explanation"},\n'
-        '    {"name": "OtherLabel", "applied": false, "rationale": "explanation"}\n'
-        "  ]}\n"
-        "]}"
+        f"LABEL\n{_format_label(label_def)}\n\n"
+        f"SEGMENTS\n{_format_segments(seg_inputs)}"
     )
 
-    resp = client.responses.create(
+    resp = client.responses.parse(
         model="gpt-4o-mini",
         input=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0,
-        text={"format": {"type": "json_object"}},
+        text_format=LabelJudgment,
     )
 
-    return json.loads(resp.output_text).get("results", [])
+    return resp.output_parsed.results
 
 
-def _validate_labels(gpt_labels: List[Dict], valid_names: Set[str]) -> List[Dict]:
-    """Filter GPT-returned labels to only those present in the label library."""
-    return [l for l in gpt_labels if isinstance(l, dict) and l.get("name", "") in valid_names]
-
-
-def _process_batch(
-    label_defs: List[Dict],
-    valid_names: Set[str],
-    strip_names: Set[str],
-    existing_index: Dict[str, Dict],
-    video_id: str,
+def _process_label_batch(
+    label_def: Dict,
     batch: List[Dict],
     blob_name: str,
     batch_idx: int,
-) -> List[Dict[str, Any]]:
+) -> Optional[Dict[str, Dict]]:
+    """Judge one label against one batch of segments, retrying with backoff.
+
+    Returns {segment_id: {"applied": bool, "rationale": str}} covering every
+    segment in the batch, or None if it still fails (errors, or the model
+    skipping segments) after all attempts.
+    """
     seg_inputs = [{"segment_id": s["segment_id"], "text": s["text"]} for s in batch]
+    expected_ids = {s["segment_id"] for s in batch}
 
-    gpt_failed = False
-    if label_defs:
-        gpt_results = []
-        for attempt in range(2):
-            try:
-                gpt_results = _call_gpt(label_defs, seg_inputs)
-                break
-            except Exception as e:
-                if attempt == 1:
-                    logging.warning(f"GPT batch failed after retry for {blob_name} batch {batch_idx}: {e}")
-                    gpt_failed = True
-                else:
-                    time.sleep(2)
+    for attempt in range(4):
+        try:
+            decisions = _call_gpt(label_def, seg_inputs)
+            result = {d.segment_id: {"applied": d.applied, "rationale": d.rationale} for d in decisions}
+            missing = expected_ids - result.keys()
+            if missing:
+                raise ValueError(f"model skipped {len(missing)} of {len(expected_ids)} segments")
+            return result
+        except Exception as e:
+            if attempt == 3:
+                logging.warning(
+                    f"GPT call failed for label '{label_def.get('name')}' on {blob_name} "
+                    f"batch {batch_idx}: {e}"
+                )
+            else:
+                time.sleep(2 * 2 ** attempt)
 
-    # If GPT failed, return no docs — existing labels are preserved as-is
-    if gpt_failed:
-        return []
+    return None
 
-    results_map = {r["segment_id"]: r for r in gpt_results}
+
+def _build_docs(
+    segments: List[Dict],
+    video_id: str,
+    always_strip: Set[str],
+    existing_index: Dict[str, Dict],
+    results_by_segment: Dict[str, Dict[str, Dict]],
+) -> List[Dict[str, Any]]:
+    """Merge this run's per-label decisions with existing labels into search index docs.
+
+    results_by_segment is {segment_id: {label_name: {"applied": bool, "rationale": str}}},
+    accumulated across ALL labels for the video before this runs once.
+    """
     docs = []
 
-    for s in batch:
+    for s in segments:
         seg_id = s["segment_id"]
         segment_key = f"{video_id}_{seg_id}"
 
@@ -198,17 +226,22 @@ def _process_batch(
             continue
 
         existing = existing_index.get(segment_key, {"pred_labels": [], "pred_label_details": []})
-        kept_labels = [n for n in existing["pred_labels"] if n not in strip_names]
-        kept_details = [d for d in existing["pred_label_details"] if isinstance(d, dict) and d.get("name") not in strip_names]
+        seg_decisions = results_by_segment.get(seg_id, {})
+        strip = always_strip | set(seg_decisions)
+        kept_labels = [n for n in existing["pred_labels"] if n not in strip]
+        kept_details = [d for d in existing["pred_label_details"] if isinstance(d, dict) and d.get("name") not in strip]
 
-        result = results_map.get(seg_id, {})
-        validated = _validate_labels(result.get("labels", []), valid_names)
+        new_details = [
+            {"name": name, "applied": dec["applied"], "rationale": dec["rationale"]}
+            for name, dec in seg_decisions.items()
+        ]
+        new_applied = [name for name, dec in seg_decisions.items() if dec["applied"]]
 
         docs.append({
             "@search.action": "mergeOrUpload",
             "segment_key": segment_key,
-            "pred_labels": kept_labels + [l["name"] for l in validated if l.get("applied", True)],
-            "pred_label_details": json.dumps(kept_details + validated, ensure_ascii=False),
+            "pred_labels": kept_labels + new_applied,
+            "pred_label_details": json.dumps(kept_details + new_details, ensure_ascii=False),
         })
 
     return docs
@@ -234,53 +267,18 @@ def _index_documents(docs: List[Dict[str, Any]]) -> None:
         raise RuntimeError(f"Search indexing had failures: {failed[:3]}")
 
 
-def _update_progress(labels_container: str) -> None:
-    """Atomically increment completed counter. If last video, mark all labels applied."""
-    service = _blob_service()
-    bc = service.get_blob_client(container=labels_container, blob="labeling_status.json")
-
-    # Retry acquiring the lease in case another invocation holds it
-    lease = None
-    for attempt in range(5):
-        try:
-            lease = bc.acquire_lease(lease_duration=15)
-            break
-        except Exception:
-            if attempt == 4:
-                raise
-            time.sleep(1 + attempt)
-
-    try:
-        status = json.loads(bc.download_blob(lease=lease).readall())
-        status["completed"] = status.get("completed", 0) + 1
-
-        if status["completed"] >= status["total"]:
-            status["status"] = "complete"
-            label_bc = service.get_blob_client(container=labels_container, blob="label_library.json")
-            library = json.loads(label_bc.download_blob().readall())
-            for l in library.get("labels", []):
-                if l.get("is_active", True):
-                    l["applied"] = True
-            library["removed_labels"] = []
-            label_bc.upload_blob(json.dumps(library, ensure_ascii=False, indent=2), overwrite=True)
-
-        bc.upload_blob(json.dumps(status, ensure_ascii=False), overwrite=True, lease=lease)
-    finally:
-        try:
-            lease.release()
-        except Exception:
-            pass
-
-
 def main(msg: func.QueueMessage) -> None:
     payload = json.loads(msg.get_body().decode("utf-8"))
     blob_name = payload["blob_name"]
+    round_id = payload["round_id"]
     label_defs = payload["label_defs"]
-    valid_names = set(payload["valid_names"])
     strip_names = set(payload["strip_names"])
 
     labels_container = os.environ.get("LABELS_CONTAINER", "labels")
     segments_container = os.environ.get("SEGMENTS_CONTAINER", "segments")
+
+    failed_labels: Set[str] = set()
+    always_strip = strip_names - {d["name"] for d in label_defs}
 
     try:
         data = _read_json_blob(segments_container, blob_name)
@@ -302,23 +300,35 @@ def main(msg: func.QueueMessage) -> None:
         segment_keys = [f"{video_id}_{s['segment_id']}" for s in segments]
         existing_index = _fetch_existing_labels(segment_keys)
 
-        batches = [(segments[i:i + BATCH_SIZE], i) for i in range(0, len(segments), BATCH_SIZE)]
-        all_docs: List[Dict[str, Any]] = []
+        # One task per (label, segment batch) — each GPT call judges a single
+        # label against a small batch of segments.
+        tasks = [
+            (label_def, segments[i:i + BATCH_SIZE], i)
+            for label_def in label_defs
+            for i in range(0, len(segments), BATCH_SIZE)
+        ]
+
+        results_by_segment: Dict[str, Dict[str, Dict]] = defaultdict(dict)
 
         with ThreadPoolExecutor(max_workers=GPT_WORKERS) as executor:
             futures = {
-                executor.submit(
-                    _process_batch,
-                    label_defs, valid_names, strip_names, existing_index,
-                    video_id, batch, blob_name, batch_idx,
-                ): batch_idx
-                for batch, batch_idx in batches
+                executor.submit(_process_label_batch, label_def, batch, blob_name, batch_idx): label_def["name"]
+                for label_def, batch, batch_idx in tasks
             }
             for future in as_completed(futures):
+                label_name = futures[future]
                 try:
-                    all_docs.extend(future.result())
+                    decisions = future.result()
                 except Exception as e:
-                    logging.warning(f"Batch failed for {blob_name}: {e}")
+                    logging.warning(f"Label batch failed for '{label_name}' on {blob_name}: {e}")
+                    decisions = None
+                if decisions is None:
+                    failed_labels.add(label_name)
+                    continue
+                for seg_id, decision in decisions.items():
+                    results_by_segment[seg_id][label_name] = decision
+
+        all_docs = _build_docs(segments, video_id, always_strip, existing_index, results_by_segment)
 
         for i in range(0, len(all_docs), INDEX_BATCH_SIZE):
             _index_documents(all_docs[i:i + INDEX_BATCH_SIZE])
@@ -327,8 +337,14 @@ def main(msg: func.QueueMessage) -> None:
 
     except Exception as e:
         logging.exception(f"Failed to process {blob_name}: {e}")
+        failed_labels = {d["name"] for d in label_defs}
     finally:
         try:
-            _update_progress(labels_container)
+            mark_video_done(labels_container, round_id, blob_name, failed_labels)
+            try_finish_round(labels_container, round_id)
         except Exception as e:
-            logging.warning(f"Failed to update progress for {blob_name}: {e}")
+            # Re-raise so the queue redelivers this message and tries again —
+            # marking a video done is idempotent (same path, overwrite), so a
+            # retry can't double-count or corrupt anything.
+            logging.exception(f"Failed to record progress for {blob_name}: {e}")
+            raise

@@ -3,6 +3,7 @@ azure-storage-blob
 azure-storage-queue
 dotenv
 openai
+pydantic
 requests
 yt-dlp
 
