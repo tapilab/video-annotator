@@ -14,7 +14,7 @@ import streamlit as st
 import json
 import re
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
 from dotenv import load_dotenv
@@ -27,7 +27,7 @@ __all__ = [
     "SEARCH_FN_URL",
     "SEARCH_ENDPOINT", "SEARCH_ADMIN_KEY", "SEARCH_INDEX_NAME",
     "AZURE_STORAGE_ACCOUNT", "AZURE_STORAGE_KEY", "PENDING_CONTAINER",
-    "ms_to_ts", "ms_to_seconds", "detect_url_type", "format_timestamp",
+    "ms_to_ts", "ms_to_seconds", "detect_url_type", "format_timestamp", "elapsed_since",
     "debug_check_index_schema", "get_index_schema",
     "get_stored_videos", "delete_video_by_id", "get_source_url_for_video",
     "generate_video_id", "get_box_audio_url", "fetch_box_audio_bytes",
@@ -76,6 +76,32 @@ def format_timestamp(value: str) -> str:
         return dt.strftime("%b %d, %Y, %I:%M %p UTC")
     except ValueError:
         return value
+
+
+def elapsed_since(value: str) -> str:
+    """
+    Turn a stored ISO timestamp into how long ago that was, e.g. '12 min ago'
+    or '2 hr 5 min ago' - lets someone spot a pending upload that's been
+    stuck for an unusually long time. Returns 'unknown' if it isn't a
+    parseable timestamp.
+    """
+    if not value or not isinstance(value, str):
+        return "unknown"
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return "unknown"
+    seconds = max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} min ago"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours} hr {minutes} min ago" if minutes else f"{hours} hr ago"
+    days = hours // 24
+    return f"{days} day{'s' if days != 1 else ''} ago"
 
 
 def detect_url_type(url: str) -> str:
@@ -262,7 +288,8 @@ def get_stored_videos(
                 break
         return list(all_videos.values())[:limit]
     except Exception as e:
-        st.error(f"Failed to retrieve videos: {e}")
+        print(f"get_stored_videos failed: {e}")
+        st.error("Couldn't retrieve videos right now — the search service didn't respond. Please try again in a moment.")
         return []
 
 
@@ -312,7 +339,8 @@ def delete_video_by_id(video_id: str) -> bool:
         r.raise_for_status()
         return True
     except Exception as e:
-        st.error(f"Delete failed: {e}")
+        print(f"delete_video_by_id failed for {video_id}: {e}")
+        st.error("Delete failed — the search service didn't respond. Please try again in a moment.")
         return False
 
 
@@ -338,7 +366,8 @@ def get_pending_uploads() -> Dict[str, Any]:
     except ResourceNotFoundError:
         return {}  # no pending uploads yet - this is the normal, expected case
     except Exception as e:
-        st.error(f"Could not read pending uploads: {type(e).__name__}: {e}")
+        print(f"get_pending_uploads failed: {e}")
+        st.error("Couldn't check pending uploads right now — storage didn't respond. Please try again in a moment.")
         return {}
 
 

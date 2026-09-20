@@ -71,7 +71,8 @@ def stage_media(source_type: str, video_id: str, url: str = None,
             return None, _error_from_response(r)
         return r.json().get("media_url"), None
     except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+        print(f"stage_media failed for {video_id}: {e}")
+        return None, "Could not reach the staging service. Please try again in a moment."
 
 
 def submit_transcription(media_url: str, video_id: str):
@@ -86,7 +87,8 @@ def submit_transcription(media_url: str, video_id: str):
             return None, _error_from_response(r)
         return r.json().get("job_url"), None
     except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+        print(f"submit_transcription failed for {video_id}: {e}")
+        return None, "Could not reach the transcription service. Please try again in a moment."
 
 
 def submit_video(source_type: str, source_url: str, video_id: str,
@@ -176,7 +178,7 @@ elif source_type == "Upload from URL":
             if "/file/" in url_input:
                 st.warning(
                     "📦 **Box viewer link detected.** "
-                    "Please ensure the the file is shared to 'people with the link', 'can view or download'")
+                    "Please ensure the file is shared to 'people with the link', 'can view or download'")
             else:
                 st.info("📦 Box URL detected")
         elif detected_source_type == "direct":
@@ -189,7 +191,6 @@ elif source_type == "Upload from URL":
 # Batch CSV Upload
 # ---------------------------------------------------------------------------
 elif source_type == "📁 Batch CSV Upload":
-    st.subheader("📁 Batch Process Videos from CSV")
 
     csv_file = st.file_uploader(
         "Upload CSV file",
@@ -288,7 +289,7 @@ if st.button(button_text, type="primary", disabled=not can_process):
             for url in urls:
                 url_type = detect_url_type(url)
                 src_type = "youtube" if url_type == "youtube" else "box" if url_type == "box" else "direct"
-                vid = generate_video_id(f"batch_{url}")
+                vid = generate_video_id(url)
 
                 _, error = submit_video(src_type, url, vid)
                 results.append({"video_id": vid, "url": url, "source_type": src_type, "error": error or ""})
@@ -339,6 +340,6 @@ if st.button(button_text, type="primary", disabled=not can_process):
                 f"""
                 ✅ **Submitted!**
                 - Video ID: `{vid}`
-                - "Check the **Pending Uploads** tab in the **Manage Videos** page to track progress."
+                - Check the **Pending Uploads** tab in the **Manage Videos** page to track progress.
                 """
             )

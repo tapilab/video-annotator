@@ -26,11 +26,8 @@ st.set_page_config(page_title=APP_TITLE, layout="wide")
 defaults = {
     'index_schema_cache': None,
     'stored_videos_cache': None,
-    'debug_info': {},
-    'video_to_delete': None,
     'delete_success': False,
     'videos_loaded': False,
-    'debug_poll_url': None,
     'video_metadata_cache': {},
     'metadata_loaded': False,
     'pending_delete': None,
@@ -56,7 +53,8 @@ def load_all_video_metadata() -> Dict[str, Dict]:
         videos = get_stored_videos(limit=10000)
         return {v['video_id']: v for v in videos if v.get('video_id')}
     except Exception as e:
-        st.error(f"Failed to load video metadata: {e}")
+        print(f"load_all_video_metadata failed: {e}")
+        st.error("Couldn't load video metadata — the search service didn't respond. Please try again in a moment.")
         return {}
 
 
@@ -95,7 +93,7 @@ def call_search_api(payload: dict) -> dict:
 # =============================================================================
 # RESULT CARD RENDERER
 # =============================================================================
-def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
+def render_hit(i: int, h: dict, metadata_cache: dict) -> None:
     """Render a single search result card."""
     start_ms = h.get("start_ms", 0)
     end_ms   = h.get("end_ms",   0)
@@ -104,11 +102,9 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
     score    = h.get("score", None)
 
     # Resolve source URL: search result first, then metadata cache
-    source_url    = h.get("source_url")
-    source_origin = "search"
+    source_url = h.get("source_url")
     if not source_url and vid in metadata_cache:
-        source_url    = metadata_cache[vid].get("source_url")
-        source_origin = "cache"
+        source_url = metadata_cache[vid].get("source_url")
 
     source_type = h.get("source_type")
 
@@ -123,8 +119,8 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
     # Expander header
     ts_range    = f"{ms_to_ts(start_ms)} → {ms_to_ts(end_ms)}"
     display_vid = vid if len(vid) < 28 else f"{vid[:25]}..."
-    score_str   = (f"  |  score={score:.3f}" if isinstance(score, (int, float))
-                   else f"  |  score={score}") if score is not None else ""
+    score_str   = (f"  |  relevance={score:.3f}" if isinstance(score, (int, float))
+                   else f"  |  relevance={score}") if score is not None else ""
     seg_str     = f"  |  seg={seg}" if seg else ""
     header      = f"{i}. [{ts_range}]  {display_vid}{seg_str}{score_str}"
 
@@ -179,7 +175,10 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
 
         # ── Link row ──────────────────────────────────────────────────────
         if start_link == "#":
-            st.error("❌ No source URL stored — cannot generate playback link")
+            if link_type == "Internal storage (no public link)":
+                st.info("📁 This video was uploaded directly — no playback link is available for it.")
+            else:
+                st.warning("No playback link available yet — try the sidebar's refresh cache button.")
         else:
             link_cols = st.columns([2, 2])
 
@@ -197,11 +196,6 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> dict:
                 if end_ms and end_ms != start_ms:
                     st.info(f"⏱ **{ms_to_ts(start_ms)}** – **{ms_to_ts(end_ms)}**")
 
-    return {
-        "source_origin": source_origin if source_url else "missing",
-        "link_type":     link_type,
-    }
-
 
 # =============================================================================
 # SEARCH PAGE
@@ -214,12 +208,11 @@ def _render_how_to_use() -> None:
             2. **Check on progress**: Use **Manage Videos** → **Pending Uploads** to see which videos are still transcribing, and **Browse & Manage** to view, delete, or export videos that are already done.
             3. **Create labels**: In **Label Management**, define your own labels (for example, vaccine skepticism or trust messaging), with an optional description and example passages. Adding or editing a label automatically queues it to be applied to every video's segments.
             4. **Check labeling accuracy** (optional): **Label Evaluation** is a separate tool for testing how well the AI's labeling matches your own judgment — upload a CSV of text you've manually labeled yourself, and it reports precision/recall/F1 per label.
-            5. **Search and filter**: Return here to search by keyword or `video_id`, and filter by predicted labels.
+            5. **Search and filter**: Return here to search by keyword, then optionally narrow results to one `video_id` or filter by predicted labels.
             6. **Inspect evidence**: Expand any result card to read the excerpt, review the AI's rationale for each applied label, and jump directly to the right timestamp in the original video.
 
             **Tips**
             - You can search with just labels (no text query) by selecting one or more labels in the sidebar.
-            - For hybrid search, keep `k` roughly 4x `top` for stronger recall.
             - Video metadata refreshes automatically every couple of minutes, or click the sidebar's refresh button for it immediately.
             """
         )
@@ -260,6 +253,8 @@ def render_search_page() -> None:
 
     q  = st.text_input("Query", value="", placeholder="e.g., measles misinformation")
     go = st.button("Search", type="primary", disabled=(not q.strip() and not selected_labels))
+    if video_id_filter.strip() and not q.strip() and not selected_labels:
+        st.caption("Add a keyword or select a label to search.")
 
     if go:
         params = {"q": q.strip(), "mode": mode, "top": PAGE_SIZE}
@@ -293,7 +288,8 @@ def render_search_page() -> None:
             try:
                 data = call_search_api(payload)
             except Exception as e:
-                st.error(f"Search failed: {e}")
+                print(f"Search failed: {e}")
+                st.error("Search failed — the search service didn't respond. Please try again in a moment.")
                 st.session_state['search_loading'] = False
                 st.stop()
         st.session_state['search_hits']    = [h for h in data.get("hits", []) if h.get("video_id") and h.get("text")]
@@ -314,16 +310,9 @@ def render_search_page() -> None:
     st.caption(f"Total: {total_count} | Page {page + 1} of {total_pages}")
 
     metadata_cache = st.session_state['video_metadata_cache']
-    source_stats   = {"from_search": 0, "from_cache": 0, "missing": 0}
-    type_counts    = {}
 
     for i, h in enumerate(hits, start=page * PAGE_SIZE + 1):
-        stats  = render_hit(i, h, metadata_cache)
-        origin = stats["source_origin"]
-        source_stats["missing" if origin == "missing" else
-                     "from_cache" if origin == "cache" else "from_search"] += 1
-        lt = stats["link_type"]
-        type_counts[lt] = type_counts.get(lt, 0) + 1
+        render_hit(i, h, metadata_cache)
 
     # ── Pagination ────────────────────────────────────────────────────────
     st.divider()
@@ -342,21 +331,6 @@ def render_search_page() -> None:
                 st.session_state['search_page']    += 1
                 st.session_state['search_loading']  = True
                 st.rerun()
-
-    # ── Summary footer ────────────────────────────────────────────────────
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.caption(f"From search result: {source_stats['from_search']}")
-    with col2:
-        st.caption(f"From metadata cache: {source_stats['from_cache']}")
-    with col3:
-        if source_stats['missing'] > 0:
-            st.caption(f"⚠ Missing source URL: {source_stats['missing']}")
-        else:
-            st.caption("✅ All results have source URLs")
-
-    type_summary = ", ".join(f"{k}: {v}" for k, v in type_counts.items())
-    st.caption(f"Link types: {type_summary}")
 
     _render_how_to_use()
 

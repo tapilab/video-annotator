@@ -79,7 +79,8 @@ with st.spinner(f"Running GPT on {len(test_cases)} rows..."):
             st.stop()
         result = r.json()
     except requests.exceptions.RequestException as e:
-        st.error(f"Connection error: {e}")
+        print(f"Label evaluation request failed: {e}")
+        st.error("Connection error — the evaluation service didn't respond. Please try again in a moment.")
         st.stop()
 
 rows = result.get("rows", [])
@@ -95,10 +96,22 @@ if unknown_labels:
 # --- Overall metrics ---
 st.subheader("Overall Metrics")
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Macro F1", f"{metrics.get('macro_f1', 0):.3f}")
-col2.metric("Micro F1", f"{metrics.get('micro_f1', 0):.3f}")
-col3.metric("Micro Precision", f"{metrics.get('micro_precision', 0):.3f}")
-col4.metric("Micro Recall", f"{metrics.get('micro_recall', 0):.3f}")
+col1.metric(
+    "Macro F1", f"{metrics.get('macro_f1', 0):.3f}",
+    help="The average accuracy across all labels, treating each label equally regardless of how often it appears. Low macro F1 with high micro F1 usually means a rare label is being missed.",
+)
+col2.metric(
+    "Micro F1", f"{metrics.get('micro_f1', 0):.3f}",
+    help="Overall accuracy across every prediction combined — a single balance of precision and recall for the whole dataset.",
+)
+col3.metric(
+    "Micro Precision", f"{metrics.get('micro_precision', 0):.3f}",
+    help="Of all the labels the AI applied, what fraction were actually correct. Low precision means it's over-applying labels.",
+)
+col4.metric(
+    "Micro Recall", f"{metrics.get('micro_recall', 0):.3f}",
+    help="Of all the labels that should have been applied, what fraction the AI actually caught. Low recall means it's missing labels it should have found.",
+)
 
 # --- Per-label metrics ---
 st.subheader("Per-Label Metrics")

@@ -54,7 +54,8 @@ def call_labels_api(method: str = "GET", payload: dict = None) -> dict:
             get_label_library.clear()
         return data
     except requests.exceptions.RequestException as e:
-        st.error(f"Connection error: {e}")
+        print(f"call_labels_api failed: {e}")
+        st.error("Connection error — the label service didn't respond. Please try again in a moment.")
         return {}
 
 
@@ -206,16 +207,29 @@ with tab_edit:
                             "description": edit_desc,
                             "examples": examples,
                         })
-                    if result and "label_id" in result:
-                        st.success("Label updated!")
-                        st.info("Labeling queued — updated labels will appear in search results shortly.")
-                        st.rerun()
+                        if result and "label_id" in result:
+                            st.success("Label updated!")
+                            st.info("Labeling queued — updated labels will appear in search results shortly.")
+                            st.rerun()
 
-                if delete_submit:
-                    result = call_labels_api("DELETE", {"label_id": label["label_id"]})
-                    if result and result.get("success"):
-                        st.success("Label deactivated!")
-                        st.info("Labeling queued — updated labels will appear in search results shortly.")
+            if delete_submit:
+                st.session_state['confirm_deactivate_label'] = label["label_id"]
+                st.rerun()
+
+            if st.session_state.get('confirm_deactivate_label') == label["label_id"]:
+                st.warning(f"Deactivate **{label['name']}**? This label will stop being applied to new segments.")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("Yes, deactivate", type="primary", use_container_width=True, key=f"confirm_deact_{label['label_id']}"):
+                        st.session_state['confirm_deactivate_label'] = None
+                        result = call_labels_api("DELETE", {"label_id": label["label_id"]})
+                        if result and result.get("success"):
+                            st.success("Label deactivated!")
+                            st.info("Labeling queued — updated labels will appear in search results shortly.")
+                            st.rerun()
+                with col_no:
+                    if st.button("Cancel", use_container_width=True, key=f"cancel_deact_{label['label_id']}"):
+                        st.session_state['confirm_deactivate_label'] = None
                         st.rerun()
     else:
         st.info("No labels available to edit. Add a label first.")
