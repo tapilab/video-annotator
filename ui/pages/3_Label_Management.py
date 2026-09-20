@@ -73,7 +73,13 @@ if _pending:
     if _status and _status.get("status") == "running":
         _completed = _status.get("completed", 0)
         _total = _status.get("total", 0)
-        st.warning(f"Labeling in progress — {_completed}/{_total} videos labeled. Refresh to check status.")
+        _current_round_names = set(_status.get("label_names", []))
+        _queued = [l for l in labels if not l.get("applied", True) and l["name"] not in _current_round_names]
+        _msg = f"Labeling in progress — {_completed}/{_total} videos labeled."
+        if _queued:
+            _msg += f" {len(_queued)} label{'s' if len(_queued) != 1 else ''} in queue."
+        _msg += " Refresh to check status."
+        st.warning(_msg)
     else:
         st.warning("Labeling in progress — search results will update once complete. Refresh to check status.")
 

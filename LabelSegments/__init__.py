@@ -7,15 +7,15 @@ label_defs, one label at a time: for each label, segments are chunked into
 small batches and GPT judges just that one label against that one batch.
 Results for all labels are accumulated in memory and written to the search
 index once per video, after every label has been processed.
-On completion of all videos, marks all labels as applied.
+When a video finishes it records a progress marker; the last video to finish
+marks that run's labels as applied and starts the next run if any are pending.
 
 Queue message format:
   {
     "blob_name": "vid_xyz_segments.json",
-    "label_defs": [{"name": ..., "description": ...}, ...],
-    "valid_names": ["Label1", ...],
-    "strip_names": ["Label1", "OldLabel", ...],
-    "total": 47
+    "round_id": "<uuid of the labeling run>",
+    "label_defs": [{"name": ..., "description": ..., "examples": [...]}, ...],
+    "strip_names": ["Label1", "OldLabel", ...]
   }
 
 Environment Variables:
@@ -46,6 +46,8 @@ import requests
 from azure.storage.blob import BlobServiceClient
 from openai import OpenAI
 from pydantic import BaseModel
+
+from shared.labeling_queue import mark_video_done, try_finish_round
 
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 10))
 GPT_WORKERS = int(os.environ.get("GPT_WORKERS", 5))
@@ -140,10 +142,10 @@ def _call_gpt(label_def: Dict, seg_inputs: List[Dict]) -> List[SegmentDecision]:
 
     system_prompt = (
         "You are a content labeler. You will be given one label, the label's definition, and a list of video transcript "
-        "segments. For every segment, decide whether the label applies (true if the segment "
-        "mentions, discusses, or is clearly related to the label topic; false otherwise) and give "
-        "a brief rationale either way. Judge every segment listed, including ones where the label "
-        "clearly does not apply."
+        "segments. For every segment, decide whether the label applies. Mark true if the segment "
+        "directly mentions, discusses, or is obviously related to the label topic. Mark false if the label does not "
+        "mention, discuss, or if it is not related. Give a brief rationale either way. "
+        "Judge every segment listed, including ones where the label clearly does not apply."
     )
 
     user_prompt = (
@@ -256,47 +258,10 @@ def _index_documents(docs: List[Dict[str, Any]]) -> None:
         raise RuntimeError(f"Search indexing had failures: {failed[:3]}")
 
 
-def _update_progress(labels_container: str) -> None:
-    """Atomically increment completed counter. If last video, mark all labels applied."""
-    service = _blob_service()
-    bc = service.get_blob_client(container=labels_container, blob="labeling_status.json")
-
-    # Retry acquiring the lease in case another invocation holds it
-    lease = None
-    for attempt in range(5):
-        try:
-            lease = bc.acquire_lease(lease_duration=15)
-            break
-        except Exception:
-            if attempt == 4:
-                raise
-            time.sleep(1 + attempt)
-
-    try:
-        status = json.loads(bc.download_blob(lease=lease).readall())
-        status["completed"] = status.get("completed", 0) + 1
-
-        if status["completed"] >= status["total"]:
-            status["status"] = "complete"
-            label_bc = service.get_blob_client(container=labels_container, blob="label_library.json")
-            library = json.loads(label_bc.download_blob().readall())
-            for l in library.get("labels", []):
-                if l.get("is_active", True):
-                    l["applied"] = True
-            library["removed_labels"] = []
-            label_bc.upload_blob(json.dumps(library, ensure_ascii=False, indent=2), overwrite=True)
-
-        bc.upload_blob(json.dumps(status, ensure_ascii=False), overwrite=True, lease=lease)
-    finally:
-        try:
-            lease.release()
-        except Exception:
-            pass
-
-
 def main(msg: func.QueueMessage) -> None:
     payload = json.loads(msg.get_body().decode("utf-8"))
     blob_name = payload["blob_name"]
+    round_id = payload["round_id"]
     label_defs = payload["label_defs"]
     strip_names = set(payload["strip_names"])
 
@@ -359,6 +324,11 @@ def main(msg: func.QueueMessage) -> None:
         logging.exception(f"Failed to process {blob_name}: {e}")
     finally:
         try:
-            _update_progress(labels_container)
+            mark_video_done(labels_container, round_id, blob_name)
+            try_finish_round(labels_container, round_id)
         except Exception as e:
-            logging.warning(f"Failed to update progress for {blob_name}: {e}")
+            # Re-raise so the queue redelivers this message and tries again —
+            # marking a video done is idempotent (same path, overwrite), so a
+            # retry can't double-count or corrupt anything.
+            logging.exception(f"Failed to record progress for {blob_name}: {e}")
+            raise
