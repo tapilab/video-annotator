@@ -41,7 +41,7 @@ def _fetch_segment_doc(segment_key: str) -> Optional[Dict[str, Any]]:
     index_name = os.environ.get("SEARCH_INDEX", "segments")
     url = (
         f"{endpoint}/indexes/{index_name}/docs/{quote(segment_key, safe='')}"
-        f"?api-version={SEARCH_API_VERSION}&$select=segment_key,pred_label_details"
+        f"?api-version={SEARCH_API_VERSION}&$select=segment_key,pred_labels,pred_label_details"
     )
     r = requests.get(url, headers={"api-key": admin_key}, timeout=30)
     if r.status_code == 404:
