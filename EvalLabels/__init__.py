@@ -3,7 +3,11 @@ EvalLabels - Azure Function for evaluating labeling accuracy
 
 Accepts a list of test cases (text + expected labels), runs them through
 the same GPT labeler used by LabelSegments, and returns per-row results
-and per-label accuracy metrics.
+and per-label accuracy metrics. The judging logic lives in
+shared/gpt_labeling.py and is used by both functions, so eval always matches
+production labeling: one label at a time against small batches of rows, with
+each label's positive examples, retries with backoff, and failed labels
+reported instead of silently scored as "predicted nothing".
 
 Input: POST with:
   {
@@ -16,6 +20,9 @@ Input: POST with:
 Output: JSON with:
   - rows: per-row comparison (expected, predicted, correct, missed, hallucinated)
   - metrics: per-label precision/recall/F1 + macro/micro F1
+  - unknown_labels: expected labels not found in the label library (ignored)
+  - failed_labels: labels whose AI calls still failed after retries; their
+    scores are unreliable
 
 Environment Variables:
   AZURE_STORAGE_ACCOUNT   - Storage account name
@@ -23,18 +30,20 @@ Environment Variables:
   LABELS_CONTAINER        - Blob container for label library (default: "labels")
   PROXY_BASE_URL          - Azure OpenAI proxy base URL
   FUNCTION_HOST_KEY       - Azure Function host key for the proxy
+  BATCH_SIZE              - Rows per GPT call, per label (default: 10)
+  GPT_WORKERS             - Parallel GPT calls (default: 5)
 """
 
 import json
 import logging
 import os
-from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Set
 
 import azure.functions as func
 from azure.storage.blob import BlobServiceClient
-from openai import OpenAI
 
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 20))
+from shared.gpt_labeling import BATCH_SIZE, GPT_WORKERS, process_label_batch
 
 def _read_label_json() -> Dict[str, Any]:
     account = os.environ["AZURE_STORAGE_ACCOUNT"]
@@ -46,49 +55,6 @@ def _read_label_json() -> Dict[str, Any]:
     container = os.environ.get("LABELS_CONTAINER", "labels")
     bc = service.get_blob_client(container=container, blob="label_library.json")
     return json.loads(bc.download_blob().readall())
-
-
-def _call_gpt(label_defs: List[Dict], seg_inputs: List[Dict]) -> List[Dict]:
-    client = OpenAI(
-        base_url=os.environ["PROXY_BASE_URL"],
-        api_key="unused",
-        default_headers={"x-functions-key": os.environ["FUNCTION_HOST_KEY"]},
-    )
-
-    system_prompt = (
-        "You are a content labeler. Given label definitions and video transcript segments, "
-        "decide whether each label applies to each segment. "
-        "Return a decision for EVERY label for EVERY segment — including labels that do not apply. "
-        'Your response must be a JSON object with a "results" key containing an array.'
-    )
-
-    user_prompt = (
-        f"Labels:\n{json.dumps(label_defs, ensure_ascii=False)}\n\n"
-        f"Segments:\n{json.dumps(seg_inputs, ensure_ascii=False)}\n\n"
-        "For each segment, return every label with:\n"
-        '  - "applied": true if the segment mentions, discusses, or is clearly related to the label topic\n'
-        '  - "applied": false if the label does not apply\n'
-        '  - "rationale": a brief explanation of your decision either way\n\n'
-        "Return:\n"
-        '{"results": [\n'
-        '  {"segment_id": "0000", "labels": [\n'
-        '    {"name": "LabelName", "applied": true, "rationale": "explanation"},\n'
-        '    {"name": "OtherLabel", "applied": false, "rationale": "explanation"}\n'
-        "  ]}\n"
-        "]}"
-    )
-
-    resp = client.responses.create(
-        model="gpt-4o-mini",
-        input=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0,
-        text={"format": {"type": "json_object"}},
-    )
-
-    return json.loads(resp.output_text).get("results", [])
 
 
 def _compute_metrics(expected_list: List[List[str]], predictions: List[List[str]]) -> Dict:
@@ -153,7 +119,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         library = _read_label_json()
         active_labels = [l for l in library.get("labels", []) if l.get("is_active", True)]
-        label_defs = [{"name": l["name"], "description": l["description"]} for l in active_labels]
+        label_defs = [{"name": l["name"], "description": l["description"], "examples": l.get("examples", [])} for l in active_labels]
         valid_names = {l["name"] for l in active_labels}
 
         if not label_defs:
@@ -163,30 +129,51 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=400,
             )
 
-        # Call GPT in batches, using global index as segment_id
-        results_map: Dict[str, Dict] = {}
-        for i in range(0, len(test_cases), BATCH_SIZE):
-            batch = test_cases[i: i + BATCH_SIZE]
-            seg_inputs = [
-                {"segment_id": str(i + j), "text": tc["text"]}
-                for j, tc in enumerate(batch)
-            ]
-            try:
-                gpt_results = _call_gpt(label_defs, seg_inputs)
-                for r in gpt_results:
-                    results_map[r["segment_id"]] = r
-            except Exception as e:
-                logging.warning(f"GPT batch {i} failed: {e}")
+        # Judge one label at a time against small batches of rows, exactly as LabelSegments
+        # does. Each row's global index is its segment_id; rows with no text are skipped.
+        segments = [
+            {"segment_id": str(idx), "text": tc["text"]}
+            for idx, tc in enumerate(test_cases)
+            if (tc.get("text") or "").strip()
+        ]
+        tasks = [
+            (label_def, segments[i:i + BATCH_SIZE], i)
+            for label_def in label_defs
+            for i in range(0, len(segments), BATCH_SIZE)
+        ]
+
+        results_by_segment: Dict[str, Dict[str, Dict]] = {}
+        failed_labels: Set[str] = set()
+        with ThreadPoolExecutor(max_workers=GPT_WORKERS) as executor:
+            futures = {
+                executor.submit(process_label_batch, label_def, batch, "eval", batch_idx): label_def["name"]
+                for label_def, batch, batch_idx in tasks
+            }
+            for future in as_completed(futures):
+                label_name = futures[future]
+                try:
+                    decisions = future.result()
+                except Exception as e:
+                    logging.warning(f"Label batch failed for '{label_name}' in eval: {e}")
+                    decisions = None
+                if decisions is None:
+                    failed_labels.add(label_name)
+                    continue
+                for seg_id, decision in decisions.items():
+                    results_by_segment.setdefault(seg_id, {})[label_name] = decision
 
         # Build per-row results
         predictions: List[List[str]] = []
         rows = []
         unknown_labels: set = set()
         for idx, tc in enumerate(test_cases):
-            result = results_map.get(str(idx), {})
-            gpt_labels = result.get("labels", [])
-            validated = [l for l in gpt_labels if isinstance(l, dict) and l.get("name") in valid_names]
-            predicted = [l["name"] for l in validated if l.get("applied", False)]
+            seg_decisions = results_by_segment.get(str(idx), {})
+            validated = [
+                {"name": d["name"], "applied": seg_decisions[d["name"]]["applied"],
+                 "rationale": seg_decisions[d["name"]]["rationale"]}
+                for d in label_defs if d["name"] in seg_decisions
+            ]
+            predicted = [l["name"] for l in validated if l["applied"]]
             raw_expected = tc.get("expected_labels", [])
             row_unknown = [l for l in raw_expected if l not in valid_names]
             unknown_labels.update(row_unknown)
@@ -207,7 +194,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         metrics = _compute_metrics(filtered_expected, predictions)
 
         return func.HttpResponse(
-            json.dumps({"rows": rows, "metrics": metrics, "unknown_labels": list(unknown_labels)}, ensure_ascii=False),
+            json.dumps({"rows": rows, "metrics": metrics, "unknown_labels": list(unknown_labels), "failed_labels": sorted(failed_labels)}, ensure_ascii=False),
             mimetype="application/json",
             status_code=200,
         )
