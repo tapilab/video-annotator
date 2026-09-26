@@ -103,10 +103,20 @@ def call_override_api(payload: dict) -> dict:
     return r.json() if r.text else {}
 
 
+def get_overrides_for_video(video_id: str) -> dict:
+    try:
+        r = requests.get(LABEL_OVERRIDE_URL, params={"video_id": video_id}, timeout=30)
+        if r.status_code >= 400:
+            return {}
+        return r.json() if r.text else {}
+    except requests.exceptions.RequestException:
+        return {}
+
+
 # =============================================================================
 # RESULT CARD RENDERER
 # =============================================================================
-def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_name: dict) -> None:
+def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_name: dict, overrides_cache: dict) -> None:
     """Render a single search result card."""
     start_ms = h.get("start_ms", 0)
     end_ms   = h.get("end_ms",   0)
@@ -146,7 +156,7 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
         # ── Labels / rationale ───────────────────────────────────────────
         labels = h.get("pred_labels") or []
         edit_key = f"editing_labels_{segment_key}"
-        ms_key = f"edit_labels_{segment_key}"
+        gen_key = f"edit_gen_{segment_key}"
 
         label_cols = st.columns([6, 1])
         with label_cols[0]:
@@ -155,41 +165,74 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
             editing = st.session_state.get(edit_key, False)
             if st.button("✕ Close" if editing else "Edit Labels", key=f"edit_toggle_{segment_key}"):
                 st.session_state[edit_key] = not editing
-                if editing:
-                    st.session_state.pop(ms_key, None)
+                if not editing:
+                    st.session_state[gen_key] = st.session_state.get(gen_key, 0) + 1
                 st.rerun()
 
+        video_overrides = overrides_cache.setdefault(vid, get_overrides_for_video(vid))
+        segment_overrides = video_overrides.get(seg, {})
+        manual_by_name = {
+            ov["label_name"]: ov for ov in segment_overrides.values()
+            if ov.get("action") == "add" and ov.get("label_name")
+        }
+
         raw_details = h.get("pred_label_details")
-        if raw_details:
-            try:
-                details = json.loads(raw_details) if isinstance(raw_details, str) else raw_details
-                applied = [d for d in details if d.get("applied") and d.get("rationale")]
-                if applied:
-                    with st.expander("Show rationale", expanded=False):
-                        for d in applied:
-                            st.markdown(f"**{d['name']}:** {d['rationale']}")
-            except (json.JSONDecodeError, TypeError):
-                pass
+        try:
+            details = json.loads(raw_details) if isinstance(raw_details, str) else (raw_details or [])
+        except (json.JSONDecodeError, TypeError):
+            details = []
 
-        # ── Edit labels (multiselect: remove by deselecting, add by picking) ──
+        rationale_items = []
+        for name, ov in manual_by_name.items():
+            if name in labels:
+                rationale_items.append((name, ov.get("reasoning", ""), True))
+        shown = {name for name, _, _ in rationale_items}
+        for d in details:
+            name = d.get("name")
+            if name in labels and name not in shown and d.get("applied") and d.get("rationale"):
+                rationale_items.append((name, d["rationale"], False))
+
+        if rationale_items:
+            with st.expander("Show rationale", expanded=False):
+                for name, text, is_manual in rationale_items:
+                    if is_manual:
+                        st.markdown(f"**{name}** *(manually added)*: {text}")
+                    else:
+                        st.markdown(f"**{name}:** {text}")
+
         if st.session_state.get(edit_key):
-            # Include any currently-applied label not in the active library (e.g.
-            # since deactivated) so it's a valid default for the widget, even
-            # though it can't be re-added or have an override recorded for it.
-            options = sorted(set(label_by_name) | set(labels))
-            edited = st.multiselect(
-                "Edit labels", options, default=labels, key=ms_key, label_visibility="collapsed",
-            )
-            added = [n for n in edited if n not in labels]
-            removed = [n for n in labels if n not in edited]
+            gen = st.session_state.get(gen_key, 0)
+            ms_key = f"edit_labels_{segment_key}_{gen}"
+            reason_key = f"edit_reason_{segment_key}_{gen}"
+            pending_key = f"pending_diff_{segment_key}_{gen}"
 
-            if added or removed:
+            options = sorted(set(label_by_name) | set(labels))
+            pending = st.session_state.get(pending_key)
+
+            if pending is None:
+                edited = st.multiselect(
+                    "Edit labels", options, default=labels, key=ms_key, label_visibility="collapsed",
+                )
+                added = [n for n in edited if n not in labels]
+                removed = [n for n in labels if n not in edited]
+                if added or removed:
+                    st.session_state[pending_key] = {"added": added, "removed": removed}
+                    st.rerun()
+            else:
+                added = pending["added"]
+                removed = pending["removed"]
+                st.session_state[ms_key] = [n for n in labels if n not in removed] + added
+                st.multiselect(
+                    "Edit labels", options, key=ms_key,
+                    label_visibility="collapsed", disabled=True,
+                )
+
                 with st.container(border=True):
                     if added:
                         st.write("**Adding:**", ", ".join(added))
                     if removed:
                         st.write("**Removing:**", ", ".join(removed))
-                    reason = st.text_area("Reason (required)", key=f"edit_reason_{segment_key}")
+                    reason = st.text_area("Reason (required)", key=reason_key)
                     edit_confirm_cols = st.columns(2)
                     with edit_confirm_cols[0]:
                         if st.button("Confirm", key=f"edit_confirm_{segment_key}", disabled=not reason.strip()):
@@ -197,7 +240,7 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                                 new_labels = labels
                                 for name in removed:
                                     if name not in label_by_name:
-                                        continue  # stale/inactive label — nothing to record an override against
+                                        continue
                                     result = call_override_api({
                                         "video_id": vid,
                                         "segment_id": seg,
@@ -217,15 +260,12 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                                     new_labels = result.get("pred_labels", new_labels)
                                 st.session_state["search_hits"][hit_idx]["pred_labels"] = new_labels
                                 st.session_state[edit_key] = False
-                                st.session_state.pop(ms_key, None)
-                                st.session_state.pop(f"edit_reason_{segment_key}", None)
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Couldn't save label changes: {e}")
                     with edit_confirm_cols[1]:
                         if st.button("Cancel", key=f"edit_cancel_{segment_key}"):
-                            st.session_state[ms_key] = list(labels)
-                            st.session_state.pop(f"edit_reason_{segment_key}", None)
+                            st.session_state[edit_key] = False
                             st.rerun()
 
         st.divider()
@@ -394,9 +434,10 @@ def render_search_page() -> None:
 
     metadata_cache = st.session_state['video_metadata_cache']
     label_by_name = {l["name"]: l for l in get_labels()}
+    overrides_cache = {}
 
     for hit_idx, h in enumerate(hits):
-        render_hit(hit_idx, page * PAGE_SIZE + hit_idx + 1, h, metadata_cache, label_by_name)
+        render_hit(hit_idx, page * PAGE_SIZE + hit_idx + 1, h, metadata_cache, label_by_name, overrides_cache)
 
     # ── Pagination ────────────────────────────────────────────────────────
     st.divider()

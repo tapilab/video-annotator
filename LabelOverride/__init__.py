@@ -1,3 +1,36 @@
+"""
+LabelOverride - Azure Function for manually adding/removing a label on one segment
+
+Lets a reviewer override the AI's labeling for a single segment: force a
+label on that the AI didn't apply, or force one off that it did. Records the
+override (see shared/label_overrides.py) and immediately patches that one
+segment's visible labels in the search index — no waiting for a labeling
+round. The AI's own record of what it decided (pred_label_details) is never
+touched, only the derived pred_labels list, which is why an override can
+always be reversed later without needing a fresh AI run.
+
+Every override made here is re-applied by LabelSegments on every future
+labeling run for that video, so it isn't undone the next time labels change.
+
+Input: POST with:
+  {
+    "video_id": "...", "segment_id": "...", "label_id": "<label's permanent id>",
+    "action": "add" | "remove", "reasoning": "..." (required, never blank)
+  }
+
+Output: JSON with the segment's updated {segment_key, pred_labels}, or an
+error (400 for bad input or an inactive/unknown label_id, 404 if the segment
+isn't in the search index).
+
+Environment Variables:
+  AZURE_STORAGE_ACCOUNT   - Storage account name
+  AZURE_STORAGE_KEY       - Storage account key
+  LABELS_CONTAINER        - Blob container for label library (default: "labels")
+  SEARCH_ENDPOINT         - Azure AI Search endpoint
+  SEARCH_ADMIN_KEY        - Azure AI Search admin key
+  SEARCH_INDEX            - Search index name (default: "segments")
+"""
+
 import json
 import os
 from typing import Any, Dict, List, Optional
@@ -29,6 +62,7 @@ def _read_label_library() -> Dict[str, Any]:
 
 
 def _find_active_label(library: Dict[str, Any], label_id: str) -> Optional[Dict]:
+    """Look up a label by its permanent id, among active labels only."""
     for label in library.get("labels", []):
         if label["label_id"] == label_id and label.get("is_active", True):
             return label
@@ -36,6 +70,8 @@ def _find_active_label(library: Dict[str, Any], label_id: str) -> Optional[Dict]
 
 
 def _fetch_segment_doc(segment_key: str) -> Optional[Dict[str, Any]]:
+    """Look up one segment's current pred_labels/pred_label_details by key.
+    Returns None if the segment isn't in the search index."""
     endpoint = os.environ["SEARCH_ENDPOINT"].rstrip("/")
     admin_key = os.environ["SEARCH_ADMIN_KEY"]
     index_name = os.environ.get("SEARCH_INDEX", "segments")
@@ -69,6 +105,28 @@ def _patch_segment_labels(segment_key: str, pred_labels: List[str]) -> None:
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
+    if req.method == "GET":
+        video_id = (req.params.get("video_id") or "").strip()
+        if not video_id:
+            return func.HttpResponse(
+                json.dumps({"error": "'video_id' query parameter is required"}),
+                mimetype="application/json",
+                status_code=400,
+            )
+        try:
+            overrides = get_overrides_for_video(video_id)
+            return func.HttpResponse(
+                json.dumps(overrides, ensure_ascii=False),
+                mimetype="application/json",
+                status_code=200,
+            )
+        except Exception as e:
+            return func.HttpResponse(
+                json.dumps({"error": str(e)}),
+                mimetype="application/json",
+                status_code=500,
+            )
+
     try:
         body = req.get_json()
     except Exception:
