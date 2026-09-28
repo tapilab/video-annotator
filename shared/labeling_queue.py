@@ -22,8 +22,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import requests
 from azure.storage.blob import BlobServiceClient
 from azure.storage.queue import QueueClient
+
+SEARCH_API_VERSION = "2024-05-01-preview"
 
 
 def _blob_service() -> BlobServiceClient:
@@ -85,40 +88,19 @@ def _claim_run(status_bc, label_names: List[str], strip_names: List[str], total:
             pass
 
 
-def enqueue_labeling_job(library: Dict[str, Any]) -> None:
-    """List all segment blobs and enqueue one message per video for this labeling round.
-
-    No-ops if a labeling run is already in progress; the labels/removals that
-    triggered this call stay pending and get picked up automatically once the
-    current run finishes (see try_finish_round).
-    """
-    all_labels = library.get("labels", [])
-    active_labels = [l for l in all_labels if l.get("is_active", True)]
-    unapplied_labels = [l for l in active_labels if not l.get("applied", False)]
-    removed_label_names = set(library.get("removed_labels", []))
-
-    if not unapplied_labels and not removed_label_names:
-        return
-
-    label_defs = [{"name": l["name"], "description": l["description"], "examples": l.get("examples", [])} for l in unapplied_labels]
-    strip_names = list({l["name"] for l in unapplied_labels} | removed_label_names)
+def _start_round(label_defs: List[Dict], strip_names: List[str], blob_names: List[str]) -> bool:
+    total = len(blob_names)
+    if total == 0:
+        return False
 
     service = _blob_service()
-    segments_container = os.environ.get("SEGMENTS_CONTAINER", "segments")
-    cc = service.get_container_client(segments_container)
-    blob_names = [b.name for b in cc.list_blobs() if b.name.endswith(".json")]
-    total = len(blob_names)
-
-    if total == 0:
-        return
-
     labels_container = os.environ.get("LABELS_CONTAINER", "labels")
     status_bc = service.get_blob_client(container=labels_container, blob="labeling_status.json")
 
-    label_names = [l["name"] for l in unapplied_labels]
+    label_names = [d["name"] for d in label_defs]
     round_id = _claim_run(status_bc, label_names, strip_names, total)
     if round_id is None:
-        return  # a run is already in progress; picked up automatically when it finishes
+        return False  # a run is already in progress; picked up automatically when it finishes
 
     account = os.environ["AZURE_STORAGE_ACCOUNT"]
     key = os.environ["AZURE_STORAGE_KEY"]
@@ -142,6 +124,94 @@ def enqueue_labeling_job(library: Dict[str, Any]) -> None:
             "strip_names": strip_names,
         })
         queue_client.send_message(message)
+
+    return True
+
+
+def enqueue_labeling_job(library: Dict[str, Any]) -> None:
+    """List all segment blobs and enqueue one message per video for this labeling round.
+
+    No-ops if a labeling run is already in progress; the labels/removals that
+    triggered this call stay pending and get picked up automatically once the
+    current run finishes (see try_finish_round).
+    """
+    all_labels = library.get("labels", [])
+    active_labels = [l for l in all_labels if l.get("is_active", True)]
+    unapplied_labels = [l for l in active_labels if not l.get("applied", False)]
+    removed_label_names = set(library.get("removed_labels", []))
+
+    if not unapplied_labels and not removed_label_names:
+        return
+
+    label_defs = [{"name": l["name"], "description": l["description"], "examples": l.get("examples", [])} for l in unapplied_labels]
+    strip_names = list({l["name"] for l in unapplied_labels} | removed_label_names)
+
+    service = _blob_service()
+    segments_container = os.environ.get("SEGMENTS_CONTAINER", "segments")
+    cc = service.get_container_client(segments_container)
+    blob_names = [b.name for b in cc.list_blobs() if b.name.endswith(".json")]
+
+    _start_round(label_defs, strip_names, blob_names)
+
+
+def _find_unlabeled_video_blobs() -> List[str]:
+    service = _blob_service()
+    segments_container = os.environ.get("SEGMENTS_CONTAINER", "segments")
+    cc = service.get_container_client(segments_container)
+    all_video_ids = {b.name[:-5] for b in cc.list_blobs() if b.name.endswith(".json")}
+    if not all_video_ids:
+        return []
+
+    endpoint = os.environ["SEARCH_ENDPOINT"].rstrip("/")
+    admin_key = os.environ["SEARCH_ADMIN_KEY"]
+    index_name = os.environ.get("SEARCH_INDEX", "segments")
+    url = f"{endpoint}/indexes/{index_name}/docs/search?api-version={SEARCH_API_VERSION}"
+    headers = {"Content-Type": "application/json", "api-key": admin_key}
+
+    labeled_video_ids = set()
+    skip = 0
+    page_size = 1000
+    while True:
+        body = {
+            "search": "*",
+            "select": "video_id,pred_label_details",
+            "top": page_size,
+            "skip": skip,
+            "orderby": "video_id asc, start_ms asc",
+        }
+        r = requests.post(url, headers=headers, json=body, timeout=60)
+        r.raise_for_status()
+        docs = r.json().get("value", [])
+        if not docs:
+            break
+        for doc in docs:
+            raw = doc.get("pred_label_details")
+            if raw and raw != "[]" and doc.get("video_id"):
+                labeled_video_ids.add(doc["video_id"])
+        if len(docs) < page_size:
+            break
+        skip += page_size
+
+    return [f"{vid}.json" for vid in (all_video_ids - labeled_video_ids)]
+
+
+def enqueue_unlabeled_videos_job(library: Dict[str, Any]) -> Dict[str, Any]:
+    active_labels = [l for l in library.get("labels", []) if l.get("is_active", True)]
+    blob_names = _find_unlabeled_video_blobs() if active_labels else []
+    if not blob_names:
+        return {"found": 0, "started": False}
+
+    label_defs = [{"name": l["name"], "description": l["description"], "examples": l.get("examples", [])} for l in active_labels]
+    started = _start_round(label_defs, [], blob_names)
+    return {"found": len(blob_names), "started": started}
+
+
+def enqueue_single_video_job(library: Dict[str, Any], video_id: str) -> bool:
+    active_labels = [l for l in library.get("labels", []) if l.get("is_active", True)]
+    if not active_labels:
+        return False
+    label_defs = [{"name": l["name"], "description": l["description"], "examples": l.get("examples", [])} for l in active_labels]
+    return _start_round(label_defs, [], [f"{video_id}.json"])
 
 
 def mark_video_done(labels_container: str, round_id: str, blob_name: str, failed_labels=()) -> None:

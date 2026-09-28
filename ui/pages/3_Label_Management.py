@@ -24,6 +24,7 @@ from utils import format_timestamp
 load_dotenv()
 
 MANAGE_LABELS_URL = os.environ.get("MANAGE_LABELS_URL", "")
+RELABEL_VIDEOS_URL = os.environ.get("RELABEL_VIDEOS_URL", "")
 
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
 st.title(APP_TITLE, anchor=False)
@@ -65,24 +66,37 @@ def get_label_library() -> dict:
     return call_labels_api("GET")
 
 
+def call_relabel_api(payload: dict) -> dict:
+    try:
+        r = requests.post(RELABEL_VIDEOS_URL, json=payload, headers={"Content-Type": "application/json"}, timeout=60)
+        if r.status_code >= 400:
+            error_msg = r.json().get("error", r.text) if r.text else f"HTTP {r.status_code}"
+            st.error(f"API Error: {error_msg}")
+            return {}
+        return r.json() if r.text else {}
+    except requests.exceptions.RequestException as e:
+        print(f"call_relabel_api failed: {e}")
+        st.error("Connection error — the labeling service didn't respond. Please try again in a moment.")
+        return {}
+
+
 # --- Labeling status banner ---
 library = get_label_library()
 labels = library.get("labels", []) if isinstance(library, dict) else []
 _pending = any(not l.get("applied", True) for l in labels)
-if _pending:
-    _status = library.get("labeling_status")
-    if _status and _status.get("status") == "running":
-        _completed = _status.get("completed", 0)
-        _total = _status.get("total", 0)
-        _current_round_names = set(_status.get("label_names", []))
-        _queued = [l for l in labels if not l.get("applied", True) and l["name"] not in _current_round_names]
-        _msg = f"Labeling in progress — {_completed}/{_total} videos labeled."
-        if _queued:
-            _msg += f" {len(_queued)} label{'s' if len(_queued) != 1 else ''} in queue."
-        _msg += " Refresh to check status."
-        st.warning(_msg)
-    else:
-        st.warning("Labeling in progress — search results will update once complete. Refresh to check status.")
+_status = library.get("labeling_status")
+if _status and _status.get("status") == "running":
+    _completed = _status.get("completed", 0)
+    _total = _status.get("total", 0)
+    _current_round_names = set(_status.get("label_names", []))
+    _queued = [l for l in labels if not l.get("applied", True) and l["name"] not in _current_round_names]
+    _msg = f"Labeling in progress — {_completed}/{_total} videos labeled."
+    if _queued:
+        _msg += f" {len(_queued)} label{'s' if len(_queued) != 1 else ''} in queue."
+    _msg += " Refresh to check status."
+    st.warning(_msg)
+elif _pending:
+    st.warning("Labeling in progress — search results will update once complete. Refresh to check status.")
 
 _incomplete = [l["name"] for l in labels if l.get("incomplete")]
 if _incomplete:
@@ -112,6 +126,19 @@ with st.expander("Re-run all labels"):
         with col_cancel:
             if st.button("Cancel", use_container_width=True):
                 st.session_state['confirm_rerun_labels'] = False
+
+# --- Run all unlabeled videos ---
+if RELABEL_VIDEOS_URL:
+    with st.expander("Run all unlabeled videos"):
+        st.caption("Labels every video that has never been through a labeling pass, using every currently active label. Doesn't touch videos that are already labeled.")
+        if st.button("Run all unlabeled videos"):
+            with st.spinner("Looking for unlabeled videos..."):
+                result = call_relabel_api({"scope": "unlabeled"})
+            if result:
+                if result.get("started") or result.get("found") == 0:
+                    st.success(result.get("message", "Done."))
+                else:
+                    st.warning(result.get("message", "Could not start."))
 
 # --- Tab layout ---
 tab_view, tab_add, tab_edit = st.tabs(["View Labels", "Add Label", "Edit Label"])

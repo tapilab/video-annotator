@@ -22,6 +22,39 @@ from utils import (
 
 TRANSCRIBE_URL = os.environ.get("TRANSCRIBE_URL", "")
 EMBED_INDEX_URL = os.environ.get("EMBED_INDEX_URL", "")
+RELABEL_VIDEOS_URL = os.environ.get("RELABEL_VIDEOS_URL", "")
+
+
+@st.dialog("Re-label video")
+def confirm_relabel_dialog(vid: str):
+    st.write(f"Re-run every active label against **{vid}**?")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Confirm", type="primary", use_container_width=True):
+            with st.spinner(f"Starting labeling for {vid}..."):
+                try:
+                    r = requests.post(
+                        RELABEL_VIDEOS_URL,
+                        json={"scope": "video", "video_id": vid},
+                        headers={"Content-Type": "application/json"},
+                        timeout=60,
+                    )
+                    data = r.json() if r.text else {}
+                    if r.status_code >= 400:
+                        result = ("error", data.get("error", f"HTTP {r.status_code}"))
+                    elif data.get("started"):
+                        result = ("success", data.get("message", "Started."))
+                    else:
+                        result = ("warning", data.get("message", "Could not start."))
+                except requests.exceptions.RequestException as e:
+                    print(f"Re-label request failed for {vid}: {e}")
+                    result = ("error", "Connection error — the labeling service didn't respond. Please try again in a moment.")
+            st.session_state[f"relabel_result_{vid}"] = result
+            st.rerun()
+    with col2:
+        if st.button("Cancel", use_container_width=True):
+            st.rerun()
+
 
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
 st.title(APP_TITLE, anchor=False)
@@ -132,7 +165,7 @@ with tab_browse:
                     src_url     = video.get('source_url', '')
                     processed   = format_timestamp(video.get('processed_at', 'unknown'))
 
-                    col_info, col_btn = st.columns([5, 1])
+                    col_info, col_relabel, col_del = st.columns([4, 1, 1])
 
                     with col_info:
                         st.write(f"**{i}. {vid}**")
@@ -143,7 +176,15 @@ with tab_browse:
                             if str(src_url).startswith('http'):
                                 st.markdown(f"[Open Source ↗]({src_url})")
 
-                    with col_btn:
+                    with col_relabel:
+                        if RELABEL_VIDEOS_URL and st.button("Re-label", key=f"relabel_{vid}_{i}_{stype}"):
+                            confirm_relabel_dialog(vid)
+                        result = st.session_state.pop(f"relabel_result_{vid}", None)
+                        if result:
+                            level, msg = result
+                            getattr(st, level)(msg)
+
+                    with col_del:
                         btn_key = f"del_{vid}_{i}_{stype}"
                         confirm_key = f"confirm_delete_{vid}"
                         if st.session_state.get(confirm_key):
@@ -155,7 +196,7 @@ with tab_browse:
                                 st.session_state[confirm_key] = False
                                 st.rerun()
                         else:
-                            if st.button("🗑️", key=btn_key, help=f"Delete {vid}"):
+                            if st.button("Delete", key=btn_key, type='primary'):
                                 st.session_state[confirm_key] = True
                                 st.rerun()
 
