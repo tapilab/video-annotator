@@ -15,8 +15,12 @@ labeling run for that video, so it isn't undone the next time labels change.
 Input: POST with:
   {
     "video_id": "...", "segment_id": "...", "label_id": "<label's permanent id>",
-    "action": "add" | "remove", "reasoning": "..." (required, never blank)
+    "action": "add" | "remove" | "reapply", "reasoning": "..."
   }
+"label_id" and "reasoning" are required for "add"/"remove"; "reapply" needs
+neither — it discards every manual override on that segment and falls back
+to exactly what the AI's own record says, so there's no new manual claim to
+justify.
 
 Output: JSON with the segment's updated {segment_key, pred_labels}, or an
 error (400 for bad input or an inactive/unknown label_id, 404 if the segment
@@ -32,6 +36,7 @@ Environment Variables:
 """
 
 import json
+import logging
 import os
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -40,7 +45,7 @@ import azure.functions as func
 import requests
 from azure.storage.blob import BlobServiceClient
 
-from shared.label_overrides import apply_overrides, get_overrides_for_video, set_override
+from shared.label_overrides import apply_overrides, clear_overrides_for_segment, get_overrides_for_video, set_override
 
 SEARCH_API_VERSION = "2024-05-01-preview"
 
@@ -138,44 +143,55 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     action = (body.get("action") or "").strip().lower()
     reasoning = (body.get("reasoning") or "").strip()
 
-    if not video_id or not segment_id or not label_id:
+    if not video_id or not segment_id:
         return func.HttpResponse(
-            json.dumps({"error": "'video_id', 'segment_id', and 'label_id' are required"}),
+            json.dumps({"error": "'video_id' and 'segment_id' are required"}),
             mimetype="application/json",
             status_code=400,
         )
-    if action not in ("add", "remove"):
+    if action not in ("add", "remove", "reapply"):
         return func.HttpResponse(
-            json.dumps({"error": "'action' must be 'add' or 'remove'"}),
+            json.dumps({"error": "'action' must be 'add', 'remove', or 'reapply'"}),
             mimetype="application/json",
             status_code=400,
         )
-    if not reasoning:
+    if action in ("add", "remove") and not label_id:
         return func.HttpResponse(
-            json.dumps({"error": "'reasoning' is required"}),
+            json.dumps({"error": "'label_id' is required for 'add'/'remove'"}),
+            mimetype="application/json",
+            status_code=400,
+        )
+    if action in ("add", "remove") and not reasoning:
+        return func.HttpResponse(
+            json.dumps({"error": "'reasoning' is required for 'add'/'remove'"}),
             mimetype="application/json",
             status_code=400,
         )
 
     try:
         library = _read_label_library()
-        label = _find_active_label(library, label_id)
-        if not label:
-            return func.HttpResponse(
-                json.dumps({"error": f"Label '{label_id}' not found or inactive"}),
-                mimetype="application/json",
-                status_code=400,
-            )
 
-        set_override(
-            video_id=video_id,
-            segment_id=segment_id,
-            label_id=label_id,
-            action=action,
-            reasoning=reasoning,
-            label_name=label["name"],
-            label_description=label.get("description", ""),
-        )
+        if action == "reapply":
+            clear_overrides_for_segment(video_id, segment_id)
+            logging.info(f"Reapplied AI labels for {video_id}_{segment_id}")
+        else:
+            label = _find_active_label(library, label_id)
+            if not label:
+                return func.HttpResponse(
+                    json.dumps({"error": f"Label '{label_id}' not found or inactive"}),
+                    mimetype="application/json",
+                    status_code=400,
+                )
+
+            set_override(
+                video_id=video_id,
+                segment_id=segment_id,
+                label_id=label_id,
+                action=action,
+                reasoning=reasoning,
+                label_name=label["name"],
+                label_description=label.get("description", ""),
+            )
 
         segment_key = f"{video_id}_{segment_id}"
         doc = _fetch_segment_doc(segment_key)

@@ -100,6 +100,22 @@ def get_overrides_for_video(video_id: str) -> Dict[str, Dict[str, Dict]]:
     return overrides
 
 
+def clear_overrides_for_segment(video_id: str, segment_id: str) -> int:
+    """Delete every override recorded for one segment (all labels), so its
+    visible list falls back to exactly what the AI's own record says.
+    Returns how many rows were cleared.
+    """
+    table = _table_client()
+    escaped_video = video_id.replace("'", "''")
+    prefix = segment_id.replace("'", "''") + "_"
+    filter_query = f"PartitionKey eq '{escaped_video}' and RowKey ge '{prefix}' and RowKey lt '{prefix}~'"
+    count = 0
+    for entity in table.query_entities(filter_query):
+        table.delete_entity(partition_key=entity["PartitionKey"], row_key=entity["RowKey"])
+        count += 1
+    return count
+
+
 def apply_overrides(
     pred_label_details: List[Dict],
     overrides: Dict[str, Dict],

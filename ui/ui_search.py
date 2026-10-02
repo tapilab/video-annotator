@@ -113,6 +113,48 @@ def get_overrides_for_video(video_id: str) -> dict:
         return {}
 
 
+@st.dialog("Preview AI Labels")
+def preview_ai_labels_dialog(vid: str, seg: str, hit_idx: int, details: list, segment_overrides: dict):
+    applied = [d for d in details if d.get("applied")]
+    if not applied:
+        st.caption("The AI doesn't currently apply any labels to this segment.")
+    else:
+        for d in sorted(applied, key=lambda d: d.get("name", "")):
+            line = f"**{d.get('name', '')}**"
+            if d.get("rationale"):
+                line += f" — {d['rationale']}"
+            st.markdown(line)
+
+    manual_notes = []
+    for ov in segment_overrides.values():
+        name = ov.get("label_name", "")
+        if ov.get("action") == "add":
+            manual_notes.append(f"added **{name}**")
+        elif ov.get("action") == "remove":
+            manual_notes.append(f"removed **{name}**")
+    if manual_notes:
+        st.warning("Reapplying will discard these manual edits: " + ", ".join(manual_notes))
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Reapply", type="primary", use_container_width=True):
+            try:
+                result = call_override_api({
+                    "video_id": vid,
+                    "segment_id": seg,
+                    "action": "reapply",
+                    "reasoning": "",
+                })
+                st.session_state["search_hits"][hit_idx]["pred_labels"] = result.get("pred_labels", [])
+                st.session_state[f"editing_labels_{vid}_{seg}"] = False
+                st.rerun()
+            except Exception as e:
+                st.error(f"Couldn't reapply: {e}")
+    with col2:
+        if st.button("Close", use_container_width=True):
+            st.rerun()
+
+
 # =============================================================================
 # RESULT CARD RENDERER
 # =============================================================================
@@ -158,17 +200,6 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
         edit_key = f"editing_labels_{segment_key}"
         gen_key = f"edit_gen_{segment_key}"
 
-        label_cols = st.columns([6, 1])
-        with label_cols[0]:
-            st.write("**Labels:**", ", ".join(labels) if labels else "(none)")
-        with label_cols[1]:
-            editing = st.session_state.get(edit_key, False)
-            if st.button("✕ Close" if editing else "Edit Labels", key=f"edit_toggle_{segment_key}"):
-                st.session_state[edit_key] = not editing
-                if not editing:
-                    st.session_state[gen_key] = st.session_state.get(gen_key, 0) + 1
-                st.rerun()
-
         video_overrides = overrides_cache.setdefault(vid, get_overrides_for_video(vid))
         segment_overrides = video_overrides.get(seg, {})
         manual_by_name = {
@@ -181,6 +212,17 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
             details = json.loads(raw_details) if isinstance(raw_details, str) else (raw_details or [])
         except (json.JSONDecodeError, TypeError):
             details = []
+
+        label_cols = st.columns([6, 1])
+        with label_cols[0]:
+            st.write("**Labels:**", ", ".join(labels) if labels else "(none)")
+        with label_cols[1]:
+            editing = st.session_state.get(edit_key, False)
+            if st.button("✕ Close" if editing else "Edit Labels", key=f"edit_toggle_{segment_key}"):
+                st.session_state[edit_key] = not editing
+                if not editing:
+                    st.session_state[gen_key] = st.session_state.get(gen_key, 0) + 1
+                st.rerun()
 
         rationale_items = []
         for name, ov in manual_by_name.items():
@@ -213,9 +255,14 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                 edited = st.multiselect(
                     "Edit labels", options, default=labels, key=ms_key, label_visibility="collapsed",
                 )
+                if st.button("See AI Labels", key=f"preview_ai_{segment_key}"):
+                    preview_ai_labels_dialog(vid, seg, hit_idx, details, segment_overrides)
                 added = [n for n in edited if n not in labels]
                 removed = [n for n in labels if n not in edited]
-                if added or removed:
+                if added and removed:
+                    st.session_state[gen_key] = st.session_state.get(gen_key, 0) + 1
+                    st.rerun()
+                elif added or removed:
                     st.session_state[pending_key] = {"added": added, "removed": removed}
                     st.rerun()
             else:
@@ -226,6 +273,8 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                     "Edit labels", options, key=ms_key,
                     label_visibility="collapsed", disabled=True,
                 )
+                if st.button("See AI Labels", key=f"preview_ai_{segment_key}"):
+                    preview_ai_labels_dialog(vid, seg, hit_idx, details, segment_overrides)
 
                 with st.container(border=True):
                     if added:
