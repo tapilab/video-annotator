@@ -200,7 +200,9 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
         edit_key = f"editing_labels_{segment_key}"
         gen_key = f"edit_gen_{segment_key}"
 
-        video_overrides = overrides_cache.setdefault(vid, get_overrides_for_video(vid))
+        if vid not in overrides_cache:
+            overrides_cache[vid] = get_overrides_for_video(vid)
+        video_overrides = overrides_cache[vid]
         segment_overrides = video_overrides.get(seg, {})
         manual_by_name = {
             ov["label_name"]: ov for ov in segment_overrides.values()
