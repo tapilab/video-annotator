@@ -187,7 +187,7 @@ def _index_documents(docs: List[Dict[str, Any]]) -> None:
     if not r.ok:
         raise RuntimeError(f"Search indexing failed: {r.status_code} {r.text}")
 
-    failed = [v for v in r.json().get("value", []) if not v.get("succeeded", True)]
+    failed = [v for v in r.json().get("value", []) if not v.get("status", False)]
     if failed:
         raise RuntimeError(f"Search indexing had failures: {failed[:3]}")
 

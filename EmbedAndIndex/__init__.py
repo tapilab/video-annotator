@@ -97,7 +97,7 @@ def _search_index_documents(docs: List[Dict[str, Any]]) -> None:
 
     resp = r.json()
     # If partial failures, surface them
-    failed = [v for v in resp.get("value", []) if not v.get("succeeded", True)]
+    failed = [v for v in resp.get("value", []) if not v.get("status", False)]
     if failed:
         raise RuntimeError(f"Search indexing had failures: {failed[:3]} (showing first 3)")
 

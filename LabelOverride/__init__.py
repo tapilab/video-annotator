@@ -104,7 +104,7 @@ def _patch_segment_labels(segment_key: str, pred_labels: List[str]) -> None:
         timeout=30,
     )
     r.raise_for_status()
-    failed = [v for v in r.json().get("value", []) if not v.get("succeeded", True)]
+    failed = [v for v in r.json().get("value", []) if not v.get("status", False)]
     if failed:
         raise RuntimeError(f"Search indexing failed: {failed[:1]}")
 

@@ -8,6 +8,11 @@ in flight at a time: if a run is already "running", enqueue_labeling_job is a
 no-op — whatever labels/removals triggered the call simply stay pending
 (applied=False / still in removed_labels) until the current run completes.
 
+Each run is either library-wide (pending labels against every video) or
+targeted (every active label against one video, or only unlabeled videos).
+Only a library-wide run marks labels applied/incomplete or clears
+removed_labels when it finishes, since a targeted run hasn't covered every video.
+
 Progress is tracked with one marker blob per video per run
 (labels/progress/<round_id>/<blob_name>) rather than a shared counter, so
 videos never write to the same place. Closing out a finished run is guarded
