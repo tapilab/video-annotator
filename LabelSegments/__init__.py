@@ -49,6 +49,7 @@ import requests
 from azure.storage.blob import BlobServiceClient
 
 from shared.gpt_labeling import BATCH_SIZE, GPT_WORKERS, process_label_batch
+from shared.label_overrides import apply_overrides, get_overrides_for_video
 from shared.labeling_queue import mark_video_done, try_finish_round
 
 INDEX_BATCH_SIZE = 500
@@ -67,6 +68,13 @@ def _blob_service() -> BlobServiceClient:
 def _read_json_blob(container: str, blob_name: str) -> Any:
     service = _blob_service()
     bc = service.get_blob_client(container=container, blob=blob_name)
+    return json.loads(bc.download_blob().readall())
+
+
+def _read_label_library() -> Dict[str, Any]:
+    service = _blob_service()
+    container = os.environ.get("LABELS_CONTAINER", "labels")
+    bc = service.get_blob_client(container=container, blob="label_library.json")
     return json.loads(bc.download_blob().readall())
 
 
@@ -116,11 +124,19 @@ def _build_docs(
     always_strip: Set[str],
     existing_index: Dict[str, Dict],
     results_by_segment: Dict[str, Dict[str, Dict]],
+    overrides_by_segment: Dict[str, Dict[str, Dict]],
+    id_to_name: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """Merge this run's per-label decisions with existing labels into search index docs.
 
     results_by_segment is {segment_id: {label_name: {"applied": bool, "rationale": str}}},
     accumulated across ALL labels for the video before this runs once.
+
+    pred_label_details always stays the AI's own honest record (untouched by
+    manual overrides). pred_labels — the visible/filterable list — is derived
+    fresh from it each time, with manual overrides layered on top, so a
+    manual add/remove keeps applying on every future run, not just the one
+    right after it was made.
     """
     docs = []
 
@@ -135,20 +151,22 @@ def _build_docs(
         existing = existing_index.get(segment_key, {"pred_labels": [], "pred_label_details": []})
         seg_decisions = results_by_segment.get(seg_id, {})
         strip = always_strip | set(seg_decisions)
-        kept_labels = [n for n in existing["pred_labels"] if n not in strip]
         kept_details = [d for d in existing["pred_label_details"] if isinstance(d, dict) and d.get("name") not in strip]
 
         new_details = [
             {"name": name, "applied": dec["applied"], "rationale": dec["rationale"]}
             for name, dec in seg_decisions.items()
         ]
-        new_applied = [name for name, dec in seg_decisions.items() if dec["applied"]]
+        final_details = kept_details + new_details
+
+        seg_overrides = overrides_by_segment.get(seg_id, {})
+        pred_labels = apply_overrides(final_details, seg_overrides, id_to_name)
 
         docs.append({
             "@search.action": "mergeOrUpload",
             "segment_key": segment_key,
-            "pred_labels": kept_labels + new_applied,
-            "pred_label_details": json.dumps(kept_details + new_details, ensure_ascii=False),
+            "pred_labels": pred_labels,
+            "pred_label_details": json.dumps(final_details, ensure_ascii=False),
         })
 
     return docs
@@ -169,7 +187,7 @@ def _index_documents(docs: List[Dict[str, Any]]) -> None:
     if not r.ok:
         raise RuntimeError(f"Search indexing failed: {r.status_code} {r.text}")
 
-    failed = [v for v in r.json().get("value", []) if not v.get("succeeded", True)]
+    failed = [v for v in r.json().get("value", []) if not v.get("status", False)]
     if failed:
         raise RuntimeError(f"Search indexing had failures: {failed[:3]}")
 
@@ -206,6 +224,11 @@ def main(msg: func.QueueMessage) -> None:
 
         segment_keys = [f"{video_id}_{s['segment_id']}" for s in segments]
         existing_index = _fetch_existing_labels(segment_keys)
+        overrides_by_segment = get_overrides_for_video(video_id)
+        label_library = _read_label_library()
+        id_to_name = {
+            l["label_id"]: l["name"] for l in label_library.get("labels", []) if l.get("is_active", True)
+        }
 
         # One task per (label, segment batch) — each GPT call judges a single
         # label against a small batch of segments.
@@ -235,7 +258,10 @@ def main(msg: func.QueueMessage) -> None:
                 for seg_id, decision in decisions.items():
                     results_by_segment[seg_id][label_name] = decision
 
-        all_docs = _build_docs(segments, video_id, always_strip, existing_index, results_by_segment)
+        all_docs = _build_docs(
+            segments, video_id, always_strip, existing_index, results_by_segment,
+            overrides_by_segment, id_to_name,
+        )
 
         for i in range(0, len(all_docs), INDEX_BATCH_SIZE):
             _index_documents(all_docs[i:i + INDEX_BATCH_SIZE])
