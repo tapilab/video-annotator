@@ -38,7 +38,7 @@ def _blob_service() -> BlobServiceClient:
     )
 
 
-def _claim_run(status_bc, label_names: List[str], strip_names: List[str], total: int) -> Optional[str]:
+def _claim_run(status_bc, label_names: List[str], strip_names: List[str], total: int, scope: str) -> Optional[str]:
     """Atomically check no run is in progress, and if so, claim one.
 
     Returns the new round's id (caller should enqueue messages stamped with
@@ -78,6 +78,7 @@ def _claim_run(status_bc, label_names: List[str], strip_names: List[str], total:
             "started_at": datetime.now(timezone.utc).isoformat(),
             "label_names": label_names,
             "strip_names": strip_names,
+            "scope": scope,
         }
         status_bc.upload_blob(json.dumps(status, ensure_ascii=False), overwrite=True, lease=lease)
         return round_id
@@ -88,7 +89,7 @@ def _claim_run(status_bc, label_names: List[str], strip_names: List[str], total:
             pass
 
 
-def _start_round(label_defs: List[Dict], strip_names: List[str], blob_names: List[str]) -> bool:
+def _start_round(label_defs: List[Dict], strip_names: List[str], blob_names: List[str], scope: str) -> bool:
     total = len(blob_names)
     if total == 0:
         return False
@@ -98,7 +99,7 @@ def _start_round(label_defs: List[Dict], strip_names: List[str], blob_names: Lis
     status_bc = service.get_blob_client(container=labels_container, blob="labeling_status.json")
 
     label_names = [d["name"] for d in label_defs]
-    round_id = _claim_run(status_bc, label_names, strip_names, total)
+    round_id = _claim_run(status_bc, label_names, strip_names, total, scope)
     if round_id is None:
         return False  # a run is already in progress; picked up automatically when it finishes
 
@@ -151,7 +152,7 @@ def enqueue_labeling_job(library: Dict[str, Any]) -> None:
     cc = service.get_container_client(segments_container)
     blob_names = [b.name for b in cc.list_blobs() if b.name.endswith(".json")]
 
-    _start_round(label_defs, strip_names, blob_names)
+    _start_round(label_defs, strip_names, blob_names, "library")
 
 
 def _find_unlabeled_video_blobs() -> List[str]:
@@ -202,7 +203,7 @@ def enqueue_unlabeled_videos_job(library: Dict[str, Any]) -> Dict[str, Any]:
         return {"found": 0, "started": False}
 
     label_defs = [{"name": l["name"], "description": l["description"], "examples": l.get("examples", [])} for l in active_labels]
-    started = _start_round(label_defs, [], blob_names)
+    started = _start_round(label_defs, [], blob_names, "targeted")
     return {"found": len(blob_names), "started": started}
 
 
@@ -211,7 +212,7 @@ def enqueue_single_video_job(library: Dict[str, Any], video_id: str) -> bool:
     if not active_labels:
         return False
     label_defs = [{"name": l["name"], "description": l["description"], "examples": l.get("examples", [])} for l in active_labels]
-    return _start_round(label_defs, [], [f"{video_id}.json"])
+    return _start_round(label_defs, [], [f"{video_id}.json"], "targeted")
 
 
 def mark_video_done(labels_container: str, round_id: str, blob_name: str, failed_labels=()) -> None:
@@ -278,14 +279,15 @@ def try_finish_round(labels_container: str, round_id: str) -> None:
 
         label_bc = service.get_blob_client(container=labels_container, blob="label_library.json")
         library = json.loads(label_bc.download_blob().readall())
-        applied_names = set(status.get("label_names", []))
-        stripped_names = set(status.get("strip_names", []))
-        for l in library.get("labels", []):
-            if l["name"] in applied_names:
-                l["applied"] = True
-                l["incomplete"] = l["name"] in failed_labels
-        library["removed_labels"] = [n for n in library.get("removed_labels", []) if n not in stripped_names]
-        label_bc.upload_blob(json.dumps(library, ensure_ascii=False, indent=2), overwrite=True)
+        if status.get("scope", "library") == "library":
+            applied_names = set(status.get("label_names", []))
+            stripped_names = set(status.get("strip_names", []))
+            for l in library.get("labels", []):
+                if l["name"] in applied_names:
+                    l["applied"] = True
+                    l["incomplete"] = l["name"] in failed_labels
+            library["removed_labels"] = [n for n in library.get("removed_labels", []) if n not in stripped_names]
+            label_bc.upload_blob(json.dumps(library, ensure_ascii=False, indent=2), overwrite=True)
     finally:
         try:
             lease.release()
