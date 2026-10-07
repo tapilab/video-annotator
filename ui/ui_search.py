@@ -238,12 +238,6 @@ def render_search_page() -> None:
     st.title(APP_TITLE, anchor=False)
     st.subheader("Search Video Segments")
 
-    # Load metadata on first run
-    if not st.session_state.get('metadata_loaded'):
-        with st.spinner("Loading video metadata..."):
-            st.session_state['video_metadata_cache'] = load_all_video_metadata()
-            st.session_state['metadata_loaded'] = True
-
     # ── Sidebar ───────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("Search Settings")
@@ -257,7 +251,8 @@ def render_search_page() -> None:
             label_match = "any"
 
         cache_size = len(st.session_state['video_metadata_cache'])
-        st.caption(f"📦 {cache_size} videos in metadata cache")
+        if cache_size:
+            st.caption(f"📦 {cache_size} videos in metadata cache")
         if st.button("🔄 Refresh cache"):
             st.cache_data.clear()
             st.session_state['video_metadata_cache'] = load_all_video_metadata()
@@ -325,6 +320,10 @@ def render_search_page() -> None:
 
     st.caption(f"Total: {total_count} | Page {page + 1} of {total_pages}")
 
+    if not st.session_state.get('metadata_loaded') and any(not h.get("source_url") for h in hits):
+        with st.spinner("Loading video metadata..."):
+            st.session_state['video_metadata_cache'] = load_all_video_metadata()
+            st.session_state['metadata_loaded'] = True
     metadata_cache = st.session_state['video_metadata_cache']
 
     for i, h in enumerate(hits, start=page * PAGE_SIZE + 1):

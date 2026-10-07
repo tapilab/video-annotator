@@ -124,7 +124,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "top": top,
             "skip": skip,
             "count": True,
-            "select": "segment_key,video_id,segment_id,start_ms,end_ms,text,pred_labels,pred_label_details",
+            "select": "segment_key,video_id,segment_id,start_ms,end_ms,text,pred_labels,pred_label_details,source_url,source_type",
         }
 
         # Deterministic ordering when there's no relevance signal from a query
@@ -188,6 +188,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 "text": item.get("text"),
                 "pred_labels": item.get("pred_labels") or [],
                 "pred_label_details": item.get("pred_label_details"),
+                "source_url": item.get("source_url"),
+                "source_type": item.get("source_type"),
                 "score": item.get("@search.score"),
             })
 
