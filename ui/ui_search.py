@@ -16,6 +16,7 @@ from utils import ms_to_ts, SEARCH_FN_URL, get_stored_videos, build_video_link, 
 
 load_dotenv()
 MANAGE_LABELS_URL = os.environ.get("MANAGE_LABELS_URL", "")
+LABEL_OVERRIDE_URL = os.environ.get("LABEL_OVERRIDE_URL", "")
 APP_TITLE = "VANTAGE-AI: Video ANnotation, TAGging & Exploration"
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
@@ -98,15 +99,80 @@ def call_search_api(payload: dict) -> dict:
     return r.json() if r.text else {}
 
 
+def call_override_api(payload: dict) -> dict:
+    r = requests.post(
+        LABEL_OVERRIDE_URL,
+        json=payload,
+        timeout=30,
+        headers={"Content-Type": "application/json"},
+    )
+    if r.status_code >= 400:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text}")
+    return r.json() if r.text else {}
+
+
+def get_overrides_for_video(video_id: str) -> dict:
+    try:
+        r = requests.get(LABEL_OVERRIDE_URL, params={"video_id": video_id}, timeout=30)
+        if r.status_code >= 400:
+            return {}
+        return r.json() if r.text else {}
+    except requests.exceptions.RequestException:
+        return {}
+
+
+@st.dialog("Preview AI Labels")
+def preview_ai_labels_dialog(vid: str, seg: str, hit_idx: int, details: list, segment_overrides: dict):
+    applied = [d for d in details if d.get("applied")]
+    if not applied:
+        st.caption("The AI doesn't currently apply any labels to this segment.")
+    else:
+        for d in sorted(applied, key=lambda d: d.get("name", "")):
+            line = f"**{d.get('name', '')}**"
+            if d.get("rationale"):
+                line += f" — {d['rationale']}"
+            st.markdown(line)
+
+    manual_notes = []
+    for ov in segment_overrides.values():
+        name = ov.get("label_name", "")
+        if ov.get("action") == "add":
+            manual_notes.append(f"added **{name}**")
+        elif ov.get("action") == "remove":
+            manual_notes.append(f"removed **{name}**")
+    if manual_notes:
+        st.warning("Reapplying will discard these manual edits: " + ", ".join(manual_notes))
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Reapply", type="primary", use_container_width=True):
+            try:
+                result = call_override_api({
+                    "video_id": vid,
+                    "segment_id": seg,
+                    "action": "reapply",
+                    "reasoning": "",
+                })
+                st.session_state["search_hits"][hit_idx]["pred_labels"] = result.get("pred_labels", [])
+                st.session_state[f"editing_labels_{vid}_{seg}"] = False
+                st.rerun()
+            except Exception as e:
+                st.error(f"Couldn't reapply: {e}")
+    with col2:
+        if st.button("Close", use_container_width=True):
+            st.rerun()
+
+
 # =============================================================================
 # RESULT CARD RENDERER
 # =============================================================================
-def render_hit(i: int, h: dict, metadata_cache: dict) -> None:
+def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_name: dict, overrides_cache: dict) -> None:
     """Render a single search result card."""
     start_ms = h.get("start_ms", 0)
     end_ms   = h.get("end_ms",   0)
     vid      = h.get("video_id", "")
     seg      = h.get("segment_id", "")
+    segment_key = h.get("segment_key") or f"{vid}_{seg}"
     score    = h.get("score", None)
 
     # Resolve source URL: search result first, then metadata cache
@@ -139,19 +205,127 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> None:
 
         # ── Labels / rationale ───────────────────────────────────────────
         labels = h.get("pred_labels") or []
-        if labels:
-            st.write("**Labels:**", ", ".join(labels))
-            raw_details = h.get("pred_label_details")
-            if raw_details:
-                try:
-                    details = json.loads(raw_details) if isinstance(raw_details, str) else raw_details
-                    applied = [d for d in details if d.get("applied") and d.get("rationale")]
-                    if applied:
-                        with st.expander("Show rationale", expanded=False):
-                            for d in applied:
-                                st.markdown(f"**{d['name']}:** {d['rationale']}")
-                except (json.JSONDecodeError, TypeError):
-                    pass
+        edit_key = f"editing_labels_{segment_key}"
+        gen_key = f"edit_gen_{segment_key}"
+
+        if vid not in overrides_cache:
+            overrides_cache[vid] = get_overrides_for_video(vid)
+        video_overrides = overrides_cache[vid]
+        segment_overrides = video_overrides.get(seg, {})
+        manual_by_name = {
+            ov["label_name"]: ov for ov in segment_overrides.values()
+            if ov.get("action") == "add" and ov.get("label_name")
+        }
+
+        raw_details = h.get("pred_label_details")
+        try:
+            details = json.loads(raw_details) if isinstance(raw_details, str) else (raw_details or [])
+        except (json.JSONDecodeError, TypeError):
+            details = []
+
+        label_cols = st.columns([6, 1])
+        with label_cols[0]:
+            st.write("**Labels:**", ", ".join(labels) if labels else "(none)")
+        with label_cols[1]:
+            editing = st.session_state.get(edit_key, False)
+            if st.button("✕ Close" if editing else "Edit Labels", key=f"edit_toggle_{segment_key}"):
+                st.session_state[edit_key] = not editing
+                if not editing:
+                    st.session_state[gen_key] = st.session_state.get(gen_key, 0) + 1
+                st.rerun()
+
+        rationale_items = []
+        for name, ov in manual_by_name.items():
+            if name in labels:
+                rationale_items.append((name, ov.get("reasoning", ""), True))
+        shown = {name for name, _, _ in rationale_items}
+        for d in details:
+            name = d.get("name")
+            if name in labels and name not in shown and d.get("applied") and d.get("rationale"):
+                rationale_items.append((name, d["rationale"], False))
+
+        if rationale_items:
+            with st.expander("Show rationale", expanded=False):
+                for name, text, is_manual in rationale_items:
+                    if is_manual:
+                        st.markdown(f"**{name}** *(manually added)*: {text}")
+                    else:
+                        st.markdown(f"**{name}:** {text}")
+
+        if st.session_state.get(edit_key):
+            gen = st.session_state.get(gen_key, 0)
+            ms_key = f"edit_labels_{segment_key}_{gen}"
+            reason_key = f"edit_reason_{segment_key}_{gen}"
+            pending_key = f"pending_diff_{segment_key}_{gen}"
+
+            options = sorted(set(label_by_name) | set(labels))
+            pending = st.session_state.get(pending_key)
+
+            if pending is None:
+                edited = st.multiselect(
+                    "Edit labels", options, default=labels, key=ms_key, label_visibility="collapsed",
+                )
+                if st.button("See AI Labels", key=f"preview_ai_{segment_key}"):
+                    preview_ai_labels_dialog(vid, seg, hit_idx, details, segment_overrides)
+                added = [n for n in edited if n not in labels]
+                removed = [n for n in labels if n not in edited]
+                if added and removed:
+                    st.session_state[gen_key] = st.session_state.get(gen_key, 0) + 1
+                    st.rerun()
+                elif added or removed:
+                    st.session_state[pending_key] = {"added": added, "removed": removed}
+                    st.rerun()
+            else:
+                added = pending["added"]
+                removed = pending["removed"]
+                st.session_state[ms_key] = [n for n in labels if n not in removed] + added
+                st.multiselect(
+                    "Edit labels", options, key=ms_key,
+                    label_visibility="collapsed", disabled=True,
+                )
+                if st.button("See AI Labels", key=f"preview_ai_{segment_key}"):
+                    preview_ai_labels_dialog(vid, seg, hit_idx, details, segment_overrides)
+
+                with st.container(border=True):
+                    if added:
+                        st.write("**Adding:**", ", ".join(added))
+                    if removed:
+                        st.write("**Removing:**", ", ".join(removed))
+                    reason = st.text_area("Reason (required)", key=reason_key)
+                    edit_confirm_cols = st.columns(2)
+                    with edit_confirm_cols[0]:
+                        if st.button("Confirm", key=f"edit_confirm_{segment_key}", disabled=not reason.strip()):
+                            try:
+                                new_labels = labels
+                                for name in removed:
+                                    if name not in label_by_name:
+                                        continue
+                                    result = call_override_api({
+                                        "video_id": vid,
+                                        "segment_id": seg,
+                                        "label_id": label_by_name[name]["label_id"],
+                                        "action": "remove",
+                                        "reasoning": reason.strip(),
+                                    })
+                                    new_labels = result.get("pred_labels", new_labels)
+                                for name in added:
+                                    result = call_override_api({
+                                        "video_id": vid,
+                                        "segment_id": seg,
+                                        "label_id": label_by_name[name]["label_id"],
+                                        "action": "add",
+                                        "reasoning": reason.strip(),
+                                    })
+                                    new_labels = result.get("pred_labels", new_labels)
+                                st.session_state["search_hits"][hit_idx]["pred_labels"] = new_labels
+                                st.session_state[edit_key] = False
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Couldn't save label changes: {e}")
+                    with edit_confirm_cols[1]:
+                        if st.button("Cancel", key=f"edit_cancel_{segment_key}"):
+                            st.session_state[edit_key] = False
+                            st.rerun()
 
         st.divider()
 
@@ -325,9 +499,11 @@ def render_search_page() -> None:
             st.session_state['video_metadata_cache'] = load_all_video_metadata()
             st.session_state['metadata_loaded'] = True
     metadata_cache = st.session_state['video_metadata_cache']
+    label_by_name = {l["name"]: l for l in get_labels()}
+    overrides_cache = {}
 
-    for i, h in enumerate(hits, start=page * PAGE_SIZE + 1):
-        render_hit(i, h, metadata_cache)
+    for hit_idx, h in enumerate(hits):
+        render_hit(hit_idx, page * PAGE_SIZE + hit_idx + 1, h, metadata_cache, label_by_name, overrides_cache)
 
     # ── Pagination ────────────────────────────────────────────────────────
     st.divider()
