@@ -75,6 +75,14 @@ def get_label_names() -> list:
     return [l["name"] for l in get_labels()]
 
 
+@st.cache_resource(max_entries=20, ttl=3600, show_spinner=False)
+def load_box_audio(source_url: str) -> bytes:
+    audio_bytes = fetch_box_audio_bytes(source_url)
+    if not audio_bytes:
+        raise RuntimeError("Box audio download failed")
+    return audio_bytes
+
+
 # =============================================================================
 # SEARCH API
 # =============================================================================
@@ -150,28 +158,36 @@ def render_hit(i: int, h: dict, metadata_cache: dict) -> None:
         # ── Audio preview ─────────────────────────────────────────────────
         # Box URLs don't support time-based deep linking, so we fetch the
         # audio bytes server-side (via utils.fetch_box_audio_bytes) and use
-        # st.audio with start_time. Cached per source URL so multiple segments
-        # from the same video don't re-download the file.
+        # st.audio with start_time. Only downloaded when the user clicks
+        # "Load audio", so results render without waiting on Box. The bytes
+        # are cached once per source URL for all sessions (load_box_audio),
+        # so other segments from the same video don't re-download the file.
         if source_url and not supports_time and link_type.startswith("Box"):
             start_sec = max(0, int(start_ms // 1000))
             end_sec   = int(end_ms // 1000) if end_ms and end_ms > start_ms else None
 
-            cache_key = f"box_bytes_{source_url}"
-            if cache_key not in st.session_state:
-                with st.spinner("Loading audio preview…"):
-                    st.session_state[cache_key] = fetch_box_audio_bytes(source_url)
+            requested_key = f"audio_requested_{source_url}"
+            audio_slot = st.empty()
+            if not st.session_state.get(requested_key):
+                if audio_slot.button("🔊 Load audio", key=f"load_audio_{i}_{vid}_{seg}"):
+                    st.session_state[requested_key] = True
+                    audio_slot.empty()
 
-            audio_bytes = st.session_state.get(cache_key)
-            if audio_bytes:
-                st.audio(
-                    audio_bytes,
-                    format="audio/m4a",
-                    start_time=start_sec,
-                    end_time=end_sec,
-                )
-                st.caption(f"▶ Playing from {ms_to_ts(start_ms)} to {ms_to_ts(end_ms)}")
-            else:
-                st.warning("⚠ Could not load audio preview — open Box link below")
+            if st.session_state.get(requested_key):
+                try:
+                    with st.spinner("Loading audio preview…"):
+                        audio_bytes = load_box_audio(source_url)
+                    with audio_slot.container():
+                        st.audio(
+                            audio_bytes,
+                            format="audio/m4a",
+                            start_time=start_sec,
+                            end_time=end_sec,
+                        )
+                        st.caption(f"▶ Playing from {ms_to_ts(start_ms)} to {ms_to_ts(end_ms)}")
+                except Exception:
+                    st.session_state[requested_key] = False
+                    audio_slot.warning("⚠ Could not load audio preview — open Box link below")
 
         # ── Link row ──────────────────────────────────────────────────────
         if start_link == "#":
