@@ -126,3 +126,5 @@ python -m streamlit run ui_search.py
 ```
 
 
+live site: 
+https://video-annotator-ui.grayglacier-6a0411f0.eastus.azurecontainerapps.io/

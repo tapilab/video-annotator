@@ -7,7 +7,10 @@ import json
 import os
 import re
 import requests
+import threading
 import streamlit as st
+from concurrent.futures import ThreadPoolExecutor
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 from dotenv import load_dotenv
@@ -76,6 +79,14 @@ def get_label_names() -> list:
     return [l["name"] for l in get_labels()]
 
 
+@st.cache_resource(max_entries=20, ttl=3600, show_spinner=False)
+def load_box_audio(source_url: str) -> bytes:
+    audio_bytes = fetch_box_audio_bytes(source_url)
+    if not audio_bytes:
+        raise RuntimeError("Box audio download failed")
+    return audio_bytes
+
+
 # =============================================================================
 # SEARCH API
 # =============================================================================
@@ -103,12 +114,16 @@ def call_override_api(payload: dict) -> dict:
     return r.json() if r.text else {}
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_overrides_for_video(video_id: str) -> dict:
+    r = requests.get(LABEL_OVERRIDE_URL, params={"video_id": video_id}, timeout=30)
+    r.raise_for_status()
+    return r.json() if r.text else {}
+
+
 def get_overrides_for_video(video_id: str) -> dict:
     try:
-        r = requests.get(LABEL_OVERRIDE_URL, params={"video_id": video_id}, timeout=30)
-        if r.status_code >= 400:
-            return {}
-        return r.json() if r.text else {}
+        return fetch_overrides_for_video(video_id)
     except requests.exceptions.RequestException:
         return {}
 
@@ -150,6 +165,8 @@ def preview_ai_labels_dialog(vid: str, seg: str, hit_idx: int, details: list, se
                 st.rerun()
             except Exception as e:
                 st.error(f"Couldn't reapply: {e}")
+            finally:
+                fetch_overrides_for_video.clear(vid)
     with col2:
         if st.button("Close", use_container_width=True):
             st.rerun()
@@ -314,6 +331,8 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Couldn't save label changes: {e}")
+                            finally:
+                                fetch_overrides_for_video.clear(vid)
                     with edit_confirm_cols[1]:
                         if st.button("Cancel", key=f"edit_cancel_{segment_key}"):
                             st.session_state[edit_key] = False
@@ -324,28 +343,41 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
         # ── Audio preview ─────────────────────────────────────────────────
         # Box URLs don't support time-based deep linking, so we fetch the
         # audio bytes server-side (via utils.fetch_box_audio_bytes) and use
-        # st.audio with start_time. Cached per source URL so multiple segments
-        # from the same video don't re-download the file.
+        # st.audio with start_time. Only downloaded when the user clicks
+        # "Load audio", so results render without waiting on Box. The bytes
+        # are cached once per source URL for all sessions (load_box_audio),
+        # so other segments from the same video don't re-download the file.
         if source_url and not supports_time and link_type.startswith("Box"):
             start_sec = max(0, int(start_ms // 1000))
             end_sec   = int(end_ms // 1000) if end_ms and end_ms > start_ms else None
 
-            cache_key = f"box_bytes_{source_url}"
-            if cache_key not in st.session_state:
-                with st.spinner("Loading audio preview…"):
-                    st.session_state[cache_key] = fetch_box_audio_bytes(source_url)
+            state_key = f"audio_state_{source_url}"
+            audio_slot = st.empty()
+            if st.session_state.get(state_key) != "requested":
+                failed = st.session_state.get(state_key) == "failed"
+                with audio_slot.container():
+                    if failed:
+                        st.warning("⚠ Could not load audio preview — retry, or open Box link below")
+                    clicked = st.button("🔁 Retry audio" if failed else "🔊 Load audio", key=f"load_audio_{i}_{vid}_{seg}")
+                if clicked:
+                    st.session_state[state_key] = "requested"
+                    audio_slot.empty()
 
-            audio_bytes = st.session_state.get(cache_key)
-            if audio_bytes:
-                st.audio(
-                    audio_bytes,
-                    format="audio/m4a",
-                    start_time=start_sec,
-                    end_time=end_sec,
-                )
-                st.caption(f"▶ Playing from {ms_to_ts(start_ms)} to {ms_to_ts(end_ms)}")
-            else:
-                st.warning("⚠ Could not load audio preview — open Box link below")
+            if st.session_state.get(state_key) == "requested":
+                try:
+                    with st.spinner("Loading audio preview…"):
+                        audio_bytes = load_box_audio(source_url)
+                    with audio_slot.container():
+                        st.audio(
+                            audio_bytes,
+                            format="audio/m4a",
+                            start_time=start_sec,
+                            end_time=end_sec,
+                        )
+                        st.caption(f"▶ Playing from {ms_to_ts(start_ms)} to {ms_to_ts(end_ms)}")
+                except Exception:
+                    st.session_state[state_key] = "failed"
+                    st.rerun()
 
         # ── Link row ──────────────────────────────────────────────────────
         if start_link == "#":
@@ -396,12 +428,6 @@ def render_search_page() -> None:
     st.title(APP_TITLE, anchor=False)
     st.subheader("Search Video Segments")
 
-    # Load metadata on first run
-    if not st.session_state.get('metadata_loaded'):
-        with st.spinner("Loading video metadata..."):
-            st.session_state['video_metadata_cache'] = load_all_video_metadata()
-            st.session_state['metadata_loaded'] = True
-
     # ── Sidebar ───────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("Search Settings")
@@ -415,7 +441,8 @@ def render_search_page() -> None:
             label_match = "any"
 
         cache_size = len(st.session_state['video_metadata_cache'])
-        st.caption(f"📦 {cache_size} videos in metadata cache")
+        if cache_size:
+            st.caption(f"📦 {cache_size} videos in metadata cache")
         if st.button("🔄 Refresh cache"):
             st.cache_data.clear()
             st.session_state['video_metadata_cache'] = load_all_video_metadata()
@@ -483,9 +510,16 @@ def render_search_page() -> None:
 
     st.caption(f"Total: {total_count} | Page {page + 1} of {total_pages}")
 
+    if not st.session_state.get('metadata_loaded') and any(not h.get("source_url") for h in hits):
+        with st.spinner("Loading video metadata..."):
+            st.session_state['video_metadata_cache'] = load_all_video_metadata()
+            st.session_state['metadata_loaded'] = True
     metadata_cache = st.session_state['video_metadata_cache']
     label_by_name = {l["name"]: l for l in get_labels()}
-    overrides_cache = {}
+    video_ids = list(dict.fromkeys(h["video_id"] for h in hits))
+    ctx = get_script_run_ctx()
+    with ThreadPoolExecutor(max_workers=10, initializer=lambda: add_script_run_ctx(threading.current_thread(), ctx)) as pool:
+        overrides_cache = dict(zip(video_ids, pool.map(get_overrides_for_video, video_ids)))
 
     for hit_idx, h in enumerate(hits):
         render_hit(hit_idx, page * PAGE_SIZE + hit_idx + 1, h, metadata_cache, label_by_name, overrides_cache)
