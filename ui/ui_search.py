@@ -7,7 +7,10 @@ import json
 import os
 import re
 import requests
+import threading
 import streamlit as st
+from concurrent.futures import ThreadPoolExecutor
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 from dotenv import load_dotenv
@@ -111,12 +114,16 @@ def call_override_api(payload: dict) -> dict:
     return r.json() if r.text else {}
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_overrides_for_video(video_id: str) -> dict:
+    r = requests.get(LABEL_OVERRIDE_URL, params={"video_id": video_id}, timeout=30)
+    r.raise_for_status()
+    return r.json() if r.text else {}
+
+
 def get_overrides_for_video(video_id: str) -> dict:
     try:
-        r = requests.get(LABEL_OVERRIDE_URL, params={"video_id": video_id}, timeout=30)
-        if r.status_code >= 400:
-            return {}
-        return r.json() if r.text else {}
+        return fetch_overrides_for_video(video_id)
     except requests.exceptions.RequestException:
         return {}
 
@@ -158,6 +165,8 @@ def preview_ai_labels_dialog(vid: str, seg: str, hit_idx: int, details: list, se
                 st.rerun()
             except Exception as e:
                 st.error(f"Couldn't reapply: {e}")
+            finally:
+                fetch_overrides_for_video.clear(vid)
     with col2:
         if st.button("Close", use_container_width=True):
             st.rerun()
@@ -322,6 +331,8 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Couldn't save label changes: {e}")
+                            finally:
+                                fetch_overrides_for_video.clear(vid)
                     with edit_confirm_cols[1]:
                         if st.button("Cancel", key=f"edit_cancel_{segment_key}"):
                             st.session_state[edit_key] = False
@@ -500,7 +511,10 @@ def render_search_page() -> None:
             st.session_state['metadata_loaded'] = True
     metadata_cache = st.session_state['video_metadata_cache']
     label_by_name = {l["name"]: l for l in get_labels()}
-    overrides_cache = {}
+    video_ids = list(dict.fromkeys(h["video_id"] for h in hits))
+    ctx = get_script_run_ctx()
+    with ThreadPoolExecutor(max_workers=10, initializer=lambda: add_script_run_ctx(threading.current_thread(), ctx)) as pool:
+        overrides_cache = dict(zip(video_ids, pool.map(get_overrides_for_video, video_ids)))
 
     for hit_idx, h in enumerate(hits):
         render_hit(hit_idx, page * PAGE_SIZE + hit_idx + 1, h, metadata_cache, label_by_name, overrides_cache)

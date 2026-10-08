@@ -23,7 +23,7 @@ Environment Variables:
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from azure.core.credentials import AzureNamedKeyCredential
 from azure.core.exceptions import ResourceExistsError
@@ -32,19 +32,25 @@ from azure.data.tables import TableClient, TableServiceClient
 TABLE_NAME = "LabelOverrides"
 
 
+_table: Optional[TableClient] = None
+
+
 def _table_client() -> TableClient:
     """Connect to the LabelOverrides table, creating it on first use."""
-    account = os.environ["AZURE_STORAGE_ACCOUNT"]
-    key = os.environ["AZURE_STORAGE_KEY"]
-    service = TableServiceClient(
-        endpoint=f"https://{account}.table.core.windows.net",
-        credential=AzureNamedKeyCredential(account, key),
-    )
-    try:
-        service.create_table(TABLE_NAME)
-    except ResourceExistsError:
-        pass
-    return service.get_table_client(TABLE_NAME)
+    global _table
+    if _table is None:
+        account = os.environ["AZURE_STORAGE_ACCOUNT"]
+        key = os.environ["AZURE_STORAGE_KEY"]
+        service = TableServiceClient(
+            endpoint=f"https://{account}.table.core.windows.net",
+            credential=AzureNamedKeyCredential(account, key),
+        )
+        try:
+            service.create_table(TABLE_NAME)
+        except ResourceExistsError:
+            pass
+        _table = service.get_table_client(TABLE_NAME)
+    return _table
 
 
 def set_override(
