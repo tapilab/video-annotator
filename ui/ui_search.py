@@ -351,14 +351,19 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
             start_sec = max(0, int(start_ms // 1000))
             end_sec   = int(end_ms // 1000) if end_ms and end_ms > start_ms else None
 
-            requested_key = f"audio_requested_{source_url}"
+            state_key = f"audio_state_{source_url}"
             audio_slot = st.empty()
-            if not st.session_state.get(requested_key):
-                if audio_slot.button("🔊 Load audio", key=f"load_audio_{i}_{vid}_{seg}"):
-                    st.session_state[requested_key] = True
+            if st.session_state.get(state_key) != "requested":
+                failed = st.session_state.get(state_key) == "failed"
+                with audio_slot.container():
+                    if failed:
+                        st.warning("⚠ Could not load audio preview — retry, or open Box link below")
+                    clicked = st.button("🔁 Retry audio" if failed else "🔊 Load audio", key=f"load_audio_{i}_{vid}_{seg}")
+                if clicked:
+                    st.session_state[state_key] = "requested"
                     audio_slot.empty()
 
-            if st.session_state.get(requested_key):
+            if st.session_state.get(state_key) == "requested":
                 try:
                     with st.spinner("Loading audio preview…"):
                         audio_bytes = load_box_audio(source_url)
@@ -371,8 +376,8 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                         )
                         st.caption(f"▶ Playing from {ms_to_ts(start_ms)} to {ms_to_ts(end_ms)}")
                 except Exception:
-                    st.session_state[requested_key] = False
-                    audio_slot.warning("⚠ Could not load audio preview — open Box link below")
+                    st.session_state[state_key] = "failed"
+                    st.rerun()
 
         # ── Link row ──────────────────────────────────────────────────────
         if start_link == "#":
