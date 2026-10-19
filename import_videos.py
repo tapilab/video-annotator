@@ -112,7 +112,7 @@ def main():
                 print(f"Indexing {vid} from {segments_blob} ...")
                 idx = post(EMBED_INDEX_URL, {
                     "segments_blob": segments_blob,
-                    "source_url": state[vid].get("media_url", ""),
+                    "source_url": state[vid]["media_url"],
                     "source_type": "box",
                 }, timeout=180)
                 state[vid]["status"] = "indexed"

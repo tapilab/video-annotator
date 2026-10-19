@@ -11,7 +11,7 @@ Architecture Role:
 - Prepares segments for searchability by creating embeddings and indexing
 - Enables hybrid search (keyword + vector) in SearchSegments function
 
-Input: POST with segments_blob path (e.g., "segments/vid_xxx.json")
+Input: POST with segments_blob path (e.g., "segments/vid_xxx.json"), source_url, and source_type (all required)
 
 Output: JSON with video_id and count of indexed segments
 
@@ -113,6 +113,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=400,
             )
 
+        source_url = (body.get("source_url") or "").strip()
+        source_type = (body.get("source_type") or "").strip()
+        if not source_url or not source_type:
+            return func.HttpResponse(
+                json.dumps({"error": "'source_url' and 'source_type' are required."}),
+                mimetype="application/json",
+                status_code=400,
+            )
+
         container, blob_name = segments_blob.split("/", 1)
         payload = _read_json_blob(container, blob_name)
 
@@ -125,8 +134,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=400,
             )
 
-        source_url = body.get("source_url") or ""
-        source_type = body.get("source_type") or "unknown"
         processed_at = datetime.now(timezone.utc).isoformat()
 
         # Prepare texts to embed
