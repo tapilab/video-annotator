@@ -28,8 +28,7 @@ __all__ = [
     "SEARCH_ENDPOINT", "SEARCH_ADMIN_KEY", "SEARCH_INDEX_NAME",
     "AZURE_STORAGE_ACCOUNT", "AZURE_STORAGE_KEY", "PENDING_CONTAINER",
     "ms_to_ts", "ms_to_seconds", "detect_url_type", "format_timestamp", "elapsed_since",
-    "debug_check_index_schema", "get_index_schema",
-    "get_stored_videos", "delete_video_by_id", "get_source_url_for_video",
+    "get_stored_videos", "delete_video_by_id",
     "generate_video_id", "get_box_audio_url", "fetch_box_audio_bytes",
     "build_video_link", "get_pending_uploads", "save_pending_uploads",
 ]
@@ -134,94 +133,11 @@ def detect_url_type(url: str) -> str:
 
 
 # =============================================================================
-# AZURE SEARCH SCHEMA
-# =============================================================================
-
-def debug_check_index_schema():
-    if not SEARCH_ENDPOINT or not SEARCH_ADMIN_KEY or not SEARCH_INDEX_NAME:
-        return "Search not configured"
-    url = f"{SEARCH_ENDPOINT}/indexes/{SEARCH_INDEX_NAME}?api-version=2024-07-01"
-    headers = {"api-key": SEARCH_ADMIN_KEY}
-    try:
-        r = requests.get(url, headers=headers, timeout=30)
-        if r.status_code == 200:
-            schema = r.json()
-            key_field = None
-            fields_info = []
-            for field in schema.get("fields", []):
-                field_info = {
-                    "name": field.get("name"),
-                    "type": field.get("type"),
-                    "key": field.get("key", False),
-                    "retrievable": field.get("retrievable", False),
-                    "filterable": field.get("filterable", False),
-                    "sortable": field.get("sortable", False),
-                    "facetable": field.get("facetable", False)
-                }
-                fields_info.append(field_info)
-                if field.get("key", False):
-                    key_field = field.get("name")
-            return {
-                "index_name": schema.get("name"),
-                "key_field": key_field,
-                "fields": fields_info,
-            }
-        else:
-            return f"Index check failed: HTTP {r.status_code}"
-    except Exception as e:
-        return f"Error checking index: {str(e)}"
-
-
-def get_index_schema():
-    if st.session_state.get('index_schema_cache'):
-        return st.session_state.index_schema_cache
-    schema_info = debug_check_index_schema()
-    if isinstance(schema_info, dict):
-        st.session_state.index_schema_cache = schema_info
-        return schema_info
-    else:
-        raise RuntimeError(f"Cannot fetch index schema: {schema_info}")
-
-
-# =============================================================================
 # VIDEO RETRIEVAL AND DELETION
 # =============================================================================
 
-def get_source_url_for_video(video_id: str) -> Optional[str]:
-    if not SEARCH_ENDPOINT or not SEARCH_ADMIN_KEY or not SEARCH_INDEX_NAME:
-        return None
-    if not video_id or not isinstance(video_id, str):
-        return None
-    search_url = (
-        f"{SEARCH_ENDPOINT}/indexes/{SEARCH_INDEX_NAME}"
-        f"/docs/search?api-version=2024-07-01"
-    )
-    headers = {"api-key": SEARCH_ADMIN_KEY, "Content-Type": "application/json"}
-    escaped_id = video_id.replace("'", "''")
-    payload = {
-        "search": "*",
-        "filter": f"video_id eq '{escaped_id}'",
-        "select": "video_id,source_url,source_type",
-        "top": 1,
-    }
-    try:
-        r = requests.post(search_url, headers=headers, json=payload, timeout=30)
-        r.raise_for_status()
-        docs = r.json().get("value", [])
-        if docs:
-            source_url = docs[0].get("source_url")
-            if source_url and isinstance(source_url, str):
-                source_url = source_url.strip()
-                if source_url:
-                    return source_url
-    except Exception as e:
-        print(f"Error looking up source_url for {video_id}: {e}")
-    return None
-
-
 def get_stored_videos(
-    video_id: str = None, source_type: str = None,
-    include_missing: bool = True, limit: int = 1000
+    video_id: str = None, source_type: str = None, limit: int = 1000
 ) -> List[Dict]:
     if not SEARCH_ENDPOINT or not SEARCH_ADMIN_KEY:
         return []
@@ -230,11 +146,6 @@ def get_stored_videos(
         f"/docs/search?api-version=2024-07-01"
     )
     headers = {"api-key": SEARCH_ADMIN_KEY, "Content-Type": "application/json"}
-    try:
-        schema = get_index_schema()
-        available_fields = {f['name'] for f in schema.get('fields', [])}
-    except Exception:
-        available_fields = set()
     filters = []
     if video_id and isinstance(video_id, str) and video_id.strip():
         escaped_id = video_id.replace("'", "''")
@@ -243,10 +154,6 @@ def get_stored_videos(
         escaped_type = source_type.replace("'", "''")
         filters.append(f"source_type eq '{escaped_type}'")
     filter_query = " and ".join(filters) if filters else None
-    select_fields = ["video_id"]
-    for field in ["source_url", "source_type", "processed_at"]:
-        if field in available_fields:
-            select_fields.append(field)
     all_videos = {}
     skip = 0
     batch_size = 1000
@@ -254,15 +161,14 @@ def get_stored_videos(
         while True:
             payload = {
                 "search": "*",
-                "select": ",".join(select_fields),
+                "select": "video_id,source_url,source_type,processed_at",
                 "top": batch_size,
                 "skip": skip,
                 "count": True,
+                "orderby": "processed_at desc",
             }
             if filter_query:
                 payload["filter"] = filter_query
-            if "processed_at" in available_fields:
-                payload["orderby"] = "processed_at desc"
             r = requests.post(url, headers=headers, json=payload, timeout=30)
             r.raise_for_status()
             data = r.json()
@@ -298,11 +204,7 @@ def delete_video_by_id(video_id: str) -> bool:
         return False
     if not video_id or not isinstance(video_id, str):
         return False
-    try:
-        schema    = get_index_schema()
-        key_field = schema.get('key_field', 'id')
-    except Exception:
-        key_field = 'id'
+    key_field = "segment_key"
     search_url = (
         f"{SEARCH_ENDPOINT}/indexes/{SEARCH_INDEX_NAME}"
         f"/docs/search?api-version=2024-07-01"
@@ -323,7 +225,7 @@ def delete_video_by_id(video_id: str) -> bool:
             return False
         delete_docs = []
         for doc in docs:
-            doc_key = doc.get(key_field) or doc.get('id')
+            doc_key = doc.get(key_field)
             if doc_key:
                 delete_docs.append({"@search.action": "delete", key_field: doc_key})
         if not delete_docs:
@@ -530,11 +432,6 @@ def build_video_link(
     actual_source = None
     if source_url and isinstance(source_url, str):
         actual_source = source_url.strip() or None
-    if not actual_source and video_id and isinstance(video_id, str):
-        try:
-            actual_source = get_source_url_for_video(video_id)
-        except Exception:
-            actual_source = None
 
     if not actual_source:
         return ("#", "No source URL stored", False)

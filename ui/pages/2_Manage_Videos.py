@@ -101,7 +101,6 @@ with tab_browse:
             videos = get_stored_videos(
                 video_id=filter_video_id.strip() or None,
                 source_type=None,
-                include_missing=True,
                 limit=1000,
             )
 
@@ -259,8 +258,8 @@ with tab_pending:
                                 EMBED_INDEX_URL,
                                 json={
                                     "segments_blob": segments_blob,
-                                    "source_url": info.get("source_url", ""),
-                                    "source_type": info.get("source_type", "unknown"),
+                                    "source_url": info["source_url"],
+                                    "source_type": info["source_type"],
                                 },
                                 timeout=180,
                             )

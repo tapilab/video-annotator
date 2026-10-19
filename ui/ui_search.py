@@ -12,7 +12,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 from dotenv import load_dotenv
 
-from utils import ms_to_ts, SEARCH_FN_URL, get_stored_videos, build_video_link, get_box_audio_url, fetch_box_audio_bytes
+from utils import ms_to_ts, SEARCH_FN_URL, build_video_link, get_box_audio_url, fetch_box_audio_bytes
 
 load_dotenv()
 MANAGE_LABELS_URL = os.environ.get("MANAGE_LABELS_URL", "")
@@ -25,12 +25,9 @@ st.set_page_config(page_title=APP_TITLE, layout="wide")
 # SESSION STATE INITIALIZATION
 # =============================================================================
 defaults = {
-    'index_schema_cache': None,
     'stored_videos_cache': None,
     'delete_success': False,
     'videos_loaded': False,
-    'video_metadata_cache': {},
-    'metadata_loaded': False,
     'pending_delete': None,
     'delete_error': None,
     'search_hits': [],
@@ -42,21 +39,6 @@ defaults = {
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
-
-
-# =============================================================================
-# METADATA CACHE
-# =============================================================================
-@st.cache_data(ttl=120)
-def load_all_video_metadata() -> Dict[str, Dict]:
-    """Fetch all videos with their source_url and return a dict keyed by video_id."""
-    try:
-        videos = get_stored_videos(limit=10000)
-        return {v['video_id']: v for v in videos if v.get('video_id')}
-    except Exception as e:
-        print(f"load_all_video_metadata failed: {e}")
-        st.error("Couldn't load video metadata — the search service didn't respond. Please try again in a moment.")
-        return {}
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -149,7 +131,7 @@ def preview_ai_labels_dialog(vid: str, seg: str, hit_idx: int, details: list):
 # =============================================================================
 # RESULT CARD RENDERER
 # =============================================================================
-def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_name: dict) -> None:
+def render_hit(hit_idx: int, i: int, h: dict, label_by_name: dict) -> None:
     """Render a single search result card."""
     start_ms = h.get("start_ms", 0)
     end_ms   = h.get("end_ms",   0)
@@ -158,10 +140,7 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
     segment_key = h.get("segment_key") or f"{vid}_{seg}"
     score    = h.get("score", None)
 
-    # Resolve source URL: search result first, then metadata cache
     source_url = h.get("source_url")
-    if not source_url and vid in metadata_cache:
-        source_url = metadata_cache[vid].get("source_url")
 
     source_type = h.get("source_type")
 
@@ -418,15 +397,6 @@ def render_search_page() -> None:
         else:
             label_match = "any"
 
-        cache_size = len(st.session_state['video_metadata_cache'])
-        if cache_size:
-            st.caption(f"📦 {cache_size} videos in metadata cache")
-        if st.button("🔄 Refresh cache"):
-            st.cache_data.clear()
-            st.session_state['video_metadata_cache'] = load_all_video_metadata()
-            st.session_state['metadata_loaded'] = True
-            st.rerun()
-
     # ── Search bar ────────────────────────────────────────────────────────
     PAGE_SIZE = 10
 
@@ -488,15 +458,10 @@ def render_search_page() -> None:
 
     st.caption(f"Total: {total_count} | Page {page + 1} of {total_pages}")
 
-    if not st.session_state.get('metadata_loaded') and any(not h.get("source_url") for h in hits):
-        with st.spinner("Loading video metadata..."):
-            st.session_state['video_metadata_cache'] = load_all_video_metadata()
-            st.session_state['metadata_loaded'] = True
-    metadata_cache = st.session_state['video_metadata_cache']
     label_by_name = {l["name"]: l for l in get_labels()}
 
     for hit_idx, h in enumerate(hits):
-        render_hit(hit_idx, page * PAGE_SIZE + hit_idx + 1, h, metadata_cache, label_by_name)
+        render_hit(hit_idx, page * PAGE_SIZE + hit_idx + 1, h, label_by_name)
 
     # ── Pagination ────────────────────────────────────────────────────────
     st.divider()
