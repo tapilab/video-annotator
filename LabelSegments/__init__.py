@@ -49,11 +49,16 @@ import requests
 from azure.storage.blob import BlobServiceClient
 
 from shared.gpt_labeling import BATCH_SIZE, GPT_WORKERS, process_label_batch
-from shared.label_overrides import apply_overrides, get_overrides_for_video
+from shared.label_overrides import apply_overrides, get_overrides_for_video, manual_details_for_index
 from shared.labeling_queue import mark_video_done, try_finish_round
 
 INDEX_BATCH_SIZE = 500
 SEARCH_API_VERSION = "2024-05-01-preview"
+MAX_DEQUEUE_COUNT = 5  # matches host.json queues.maxDequeueCount
+
+
+class OverridesKeptChanging(Exception):
+    pass
 
 
 def _blob_service() -> BlobServiceClient:
@@ -167,6 +172,7 @@ def _build_docs(
             "segment_key": segment_key,
             "pred_labels": pred_labels,
             "pred_label_details": json.dumps(final_details, ensure_ascii=False),
+            "manual_label_details": manual_details_for_index(seg_overrides, id_to_name),
         })
 
     return docs
@@ -203,6 +209,7 @@ def main(msg: func.QueueMessage) -> None:
     segments_container = os.environ.get("SEGMENTS_CONTAINER", "segments")
 
     failed_labels: Set[str] = set()
+    retry_later = False
     always_strip = strip_names - {d["name"] for d in label_defs}
 
     try:
@@ -224,7 +231,6 @@ def main(msg: func.QueueMessage) -> None:
 
         segment_keys = [f"{video_id}_{s['segment_id']}" for s in segments]
         existing_index = _fetch_existing_labels(segment_keys)
-        overrides_by_segment = get_overrides_for_video(video_id)
         label_library = _read_label_library()
         id_to_name = {
             l["label_id"]: l["name"] for l in label_library.get("labels", []) if l.get("is_active", True)
@@ -258,26 +264,43 @@ def main(msg: func.QueueMessage) -> None:
                 for seg_id, decision in decisions.items():
                     results_by_segment[seg_id][label_name] = decision
 
-        all_docs = _build_docs(
-            segments, video_id, always_strip, existing_index, results_by_segment,
-            overrides_by_segment, id_to_name,
-        )
+        overrides_by_segment = get_overrides_for_video(video_id)
+        for _ in range(3):
+            all_docs = _build_docs(
+                segments, video_id, always_strip, existing_index, results_by_segment,
+                overrides_by_segment, id_to_name,
+            )
 
-        for i in range(0, len(all_docs), INDEX_BATCH_SIZE):
-            _index_documents(all_docs[i:i + INDEX_BATCH_SIZE])
+            for i in range(0, len(all_docs), INDEX_BATCH_SIZE):
+                _index_documents(all_docs[i:i + INDEX_BATCH_SIZE])
+
+            latest = get_overrides_for_video(video_id)
+            if latest == overrides_by_segment:
+                break
+            overrides_by_segment = latest
+        else:
+            raise OverridesKeptChanging(f"Manual label edits kept changing while indexing {blob_name}")
 
         logging.info(f"Labeled {len(all_docs)} segments for {blob_name}")
 
+    except OverridesKeptChanging as e:
+        if (msg.dequeue_count or 1) < MAX_DEQUEUE_COUNT:
+            logging.warning(f"{e}; leaving it for the queue to retry")
+            retry_later = True
+            raise
+        logging.error(f"{e}; giving up after {msg.dequeue_count} attempts")
+        failed_labels = {d["name"] for d in label_defs}
     except Exception as e:
         logging.exception(f"Failed to process {blob_name}: {e}")
         failed_labels = {d["name"] for d in label_defs}
     finally:
-        try:
-            mark_video_done(labels_container, round_id, blob_name, failed_labels)
-            try_finish_round(labels_container, round_id)
-        except Exception as e:
-            # Re-raise so the queue redelivers this message and tries again —
-            # marking a video done is idempotent (same path, overwrite), so a
-            # retry can't double-count or corrupt anything.
-            logging.exception(f"Failed to record progress for {blob_name}: {e}")
-            raise
+        if not retry_later:
+            try:
+                mark_video_done(labels_container, round_id, blob_name, failed_labels)
+                try_finish_round(labels_container, round_id)
+            except Exception as e:
+                # Re-raise so the queue redelivers this message and tries again —
+                # marking a video done is idempotent (same path, overwrite), so a
+                # retry can't double-count or corrupt anything.
+                logging.exception(f"Failed to record progress for {blob_name}: {e}")
+                raise

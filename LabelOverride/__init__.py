@@ -22,7 +22,7 @@ neither — it discards every manual override on that segment and falls back
 to exactly what the AI's own record says, so there's no new manual claim to
 justify.
 
-Output: JSON with the segment's updated {segment_key, pred_labels}, or an
+Output: JSON with the segment's updated {segment_key, pred_labels, manual_label_details}, or an
 error (400 for bad input or an inactive/unknown label_id, 404 if the segment
 isn't in the search index).
 
@@ -45,7 +45,13 @@ import azure.functions as func
 import requests
 from azure.storage.blob import BlobServiceClient
 
-from shared.label_overrides import apply_overrides, clear_overrides_for_segment, get_overrides_for_video, set_override
+from shared.label_overrides import (
+    apply_overrides,
+    clear_overrides_for_segment,
+    get_overrides_for_video,
+    manual_details_for_index,
+    set_override,
+)
 
 SEARCH_API_VERSION = "2024-05-01-preview"
 
@@ -91,12 +97,17 @@ def _fetch_segment_doc(segment_key: str) -> Optional[Dict[str, Any]]:
     return r.json()
 
 
-def _patch_segment_labels(segment_key: str, pred_labels: List[str]) -> None:
+def _patch_segment_labels(segment_key: str, pred_labels: List[str], manual_label_details: str) -> None:
     endpoint = os.environ["SEARCH_ENDPOINT"].rstrip("/")
     admin_key = os.environ["SEARCH_ADMIN_KEY"]
     index_name = os.environ.get("SEARCH_INDEX", "segments")
     url = f"{endpoint}/indexes/{index_name}/docs/index?api-version={SEARCH_API_VERSION}"
-    body = {"value": [{"@search.action": "mergeOrUpload", "segment_key": segment_key, "pred_labels": pred_labels}]}
+    body = {"value": [{
+        "@search.action": "mergeOrUpload",
+        "segment_key": segment_key,
+        "pred_labels": pred_labels,
+        "manual_label_details": manual_label_details,
+    }]}
     r = requests.post(
         url,
         headers={"Content-Type": "application/json", "api-key": admin_key},
@@ -215,11 +226,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         }
         segment_overrides = get_overrides_for_video(video_id).get(segment_id, {})
         new_labels = apply_overrides(pred_label_details, segment_overrides, id_to_name)
+        manual_label_details = manual_details_for_index(segment_overrides, id_to_name)
 
-        _patch_segment_labels(segment_key, new_labels)
+        _patch_segment_labels(segment_key, new_labels, manual_label_details)
 
         return func.HttpResponse(
-            json.dumps({"segment_key": segment_key, "pred_labels": new_labels}, ensure_ascii=False),
+            json.dumps({
+                "segment_key": segment_key,
+                "pred_labels": new_labels,
+                "manual_label_details": manual_label_details,
+            }, ensure_ascii=False),
             mimetype="application/json",
             status_code=200,
         )

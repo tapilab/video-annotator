@@ -15,11 +15,15 @@ label list (pred_labels) is affected. That's what makes "undo" free: clear an
 override and the visible list is just recomputed straight from the AI's
 record again, no separate rollback needed.
 
+The table is the official record; a copy lives in the search index
+(manual_label_details) so the search page doesn't need a separate lookup.
+
 Environment Variables:
   AZURE_STORAGE_ACCOUNT   - Storage account name
   AZURE_STORAGE_KEY       - Storage account key
 """
 
+import json
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -149,3 +153,19 @@ def apply_overrides(
         elif override["action"] == "add":
             added.add(name)
     return sorted((ai_applied - removed) | added)
+
+
+def manual_details_for_index(overrides: Dict[str, Dict], id_to_name: Dict[str, str]) -> str:
+    """JSON for a segment's manual_label_details in the search index; "[]" means no manual edits."""
+    details = []
+    for label_id, override in sorted(overrides.items()):
+        name = id_to_name.get(label_id)
+        if not name:
+            continue
+        details.append({
+            "label_id": label_id,
+            "name": name,
+            "action": override["action"],
+            "reasoning": override.get("reasoning", ""),
+        })
+    return json.dumps(details, ensure_ascii=False)

@@ -7,10 +7,7 @@ import json
 import os
 import re
 import requests
-import threading
 import streamlit as st
-from concurrent.futures import ThreadPoolExecutor
-from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 from dotenv import load_dotenv
@@ -114,22 +111,8 @@ def call_override_api(payload: dict) -> dict:
     return r.json() if r.text else {}
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_overrides_for_video(video_id: str) -> dict:
-    r = requests.get(LABEL_OVERRIDE_URL, params={"video_id": video_id}, timeout=30)
-    r.raise_for_status()
-    return r.json() if r.text else {}
-
-
-def get_overrides_for_video(video_id: str) -> dict:
-    try:
-        return fetch_overrides_for_video(video_id)
-    except requests.exceptions.RequestException:
-        return {}
-
-
 @st.dialog("Preview AI Labels")
-def preview_ai_labels_dialog(vid: str, seg: str, hit_idx: int, details: list, segment_overrides: dict):
+def preview_ai_labels_dialog(vid: str, seg: str, hit_idx: int, details: list):
     applied = [d for d in details if d.get("applied")]
     if not applied:
         st.caption("The AI doesn't currently apply any labels to this segment.")
@@ -140,15 +123,7 @@ def preview_ai_labels_dialog(vid: str, seg: str, hit_idx: int, details: list, se
                 line += f" — {d['rationale']}"
             st.markdown(line)
 
-    manual_notes = []
-    for ov in segment_overrides.values():
-        name = ov.get("label_name", "")
-        if ov.get("action") == "add":
-            manual_notes.append(f"added **{name}**")
-        elif ov.get("action") == "remove":
-            manual_notes.append(f"removed **{name}**")
-    if manual_notes:
-        st.warning("Reapplying will discard these manual edits: " + ", ".join(manual_notes))
+    st.warning("Reapplying AI labels will discard manual edits")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -161,12 +136,11 @@ def preview_ai_labels_dialog(vid: str, seg: str, hit_idx: int, details: list, se
                     "reasoning": "",
                 })
                 st.session_state["search_hits"][hit_idx]["pred_labels"] = result.get("pred_labels", [])
+                st.session_state["search_hits"][hit_idx]["manual_label_details"] = result.get("manual_label_details", "[]")
                 st.session_state[f"editing_labels_{vid}_{seg}"] = False
                 st.rerun()
             except Exception as e:
                 st.error(f"Couldn't reapply: {e}")
-            finally:
-                fetch_overrides_for_video.clear(vid)
     with col2:
         if st.button("Close", use_container_width=True):
             st.rerun()
@@ -175,7 +149,7 @@ def preview_ai_labels_dialog(vid: str, seg: str, hit_idx: int, details: list, se
 # =============================================================================
 # RESULT CARD RENDERER
 # =============================================================================
-def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_name: dict, overrides_cache: dict) -> None:
+def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_name: dict) -> None:
     """Render a single search result card."""
     start_ms = h.get("start_ms", 0)
     end_ms   = h.get("end_ms",   0)
@@ -217,13 +191,14 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
         edit_key = f"editing_labels_{segment_key}"
         gen_key = f"edit_gen_{segment_key}"
 
-        if vid not in overrides_cache:
-            overrides_cache[vid] = get_overrides_for_video(vid)
-        video_overrides = overrides_cache[vid]
-        segment_overrides = video_overrides.get(seg, {})
+        raw_manual = h.get("manual_label_details")
+        try:
+            manual_details = json.loads(raw_manual) if isinstance(raw_manual, str) else (raw_manual or [])
+        except (json.JSONDecodeError, TypeError):
+            manual_details = []
         manual_by_name = {
-            ov["label_name"]: ov for ov in segment_overrides.values()
-            if ov.get("action") == "add" and ov.get("label_name")
+            d["name"]: d for d in manual_details
+            if d.get("action") == "add" and d.get("name")
         }
 
         raw_details = h.get("pred_label_details")
@@ -275,7 +250,7 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                     "Edit labels", options, default=labels, key=ms_key, label_visibility="collapsed",
                 )
                 if st.button("See AI Labels", key=f"preview_ai_{segment_key}"):
-                    preview_ai_labels_dialog(vid, seg, hit_idx, details, segment_overrides)
+                    preview_ai_labels_dialog(vid, seg, hit_idx, details)
                 added = [n for n in edited if n not in labels]
                 removed = [n for n in labels if n not in edited]
                 if added and removed:
@@ -293,7 +268,7 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                     label_visibility="collapsed", disabled=True,
                 )
                 if st.button("See AI Labels", key=f"preview_ai_{segment_key}"):
-                    preview_ai_labels_dialog(vid, seg, hit_idx, details, segment_overrides)
+                    preview_ai_labels_dialog(vid, seg, hit_idx, details)
 
                 with st.container(border=True):
                     if added:
@@ -303,9 +278,10 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                     reason = st.text_area("Reason (required)", key=reason_key)
                     edit_confirm_cols = st.columns(2)
                     with edit_confirm_cols[0]:
-                        if st.button("Confirm", key=f"edit_confirm_{segment_key}", disabled=not reason.strip()):
+                        if st.button("Confirm", key=f"edit_confirm_{segment_key}", type="primary", disabled=not reason.strip()):
+                            new_labels = labels
+                            new_manual = h.get("manual_label_details")
                             try:
-                                new_labels = labels
                                 for name in removed:
                                     if name not in label_by_name:
                                         continue
@@ -317,6 +293,7 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                                         "reasoning": reason.strip(),
                                     })
                                     new_labels = result.get("pred_labels", new_labels)
+                                    new_manual = result.get("manual_label_details", new_manual)
                                 for name in added:
                                     result = call_override_api({
                                         "video_id": vid,
@@ -326,13 +303,14 @@ def render_hit(hit_idx: int, i: int, h: dict, metadata_cache: dict, label_by_nam
                                         "reasoning": reason.strip(),
                                     })
                                     new_labels = result.get("pred_labels", new_labels)
-                                st.session_state["search_hits"][hit_idx]["pred_labels"] = new_labels
+                                    new_manual = result.get("manual_label_details", new_manual)
                                 st.session_state[edit_key] = False
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Couldn't save label changes: {e}")
                             finally:
-                                fetch_overrides_for_video.clear(vid)
+                                st.session_state["search_hits"][hit_idx]["pred_labels"] = new_labels
+                                st.session_state["search_hits"][hit_idx]["manual_label_details"] = new_manual
                     with edit_confirm_cols[1]:
                         if st.button("Cancel", key=f"edit_cancel_{segment_key}"):
                             st.session_state[edit_key] = False
@@ -516,13 +494,9 @@ def render_search_page() -> None:
             st.session_state['metadata_loaded'] = True
     metadata_cache = st.session_state['video_metadata_cache']
     label_by_name = {l["name"]: l for l in get_labels()}
-    video_ids = list(dict.fromkeys(h["video_id"] for h in hits))
-    ctx = get_script_run_ctx()
-    with ThreadPoolExecutor(max_workers=10, initializer=lambda: add_script_run_ctx(threading.current_thread(), ctx)) as pool:
-        overrides_cache = dict(zip(video_ids, pool.map(get_overrides_for_video, video_ids)))
 
     for hit_idx, h in enumerate(hits):
-        render_hit(hit_idx, page * PAGE_SIZE + hit_idx + 1, h, metadata_cache, label_by_name, overrides_cache)
+        render_hit(hit_idx, page * PAGE_SIZE + hit_idx + 1, h, metadata_cache, label_by_name)
 
     # ── Pagination ────────────────────────────────────────────────────────
     st.divider()
