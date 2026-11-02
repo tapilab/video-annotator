@@ -36,8 +36,8 @@ def _format_segments(seg_inputs: List[Dict]) -> str:
     return "\n".join(f"[{s['segment_id']}] {s['text']}" for s in seg_inputs)
 
 
-def _call_gpt(label_def: Dict, seg_inputs: List[Dict]) -> List[SegmentDecision]:
-    """Call GPT-4o-mini via proxy to judge one label against a batch of segments."""
+def _call_gpt(label_def: Dict, seg_inputs: List[Dict], model: str = "gpt-4o-mini") -> List[SegmentDecision]:
+    """Call the model (GPT-4o-mini by default) via proxy to judge one label against a batch of segments."""
     client = OpenAI(
         base_url=os.environ["PROXY_BASE_URL"],
         api_key="unused",
@@ -57,14 +57,16 @@ def _call_gpt(label_def: Dict, seg_inputs: List[Dict]) -> List[SegmentDecision]:
         f"SEGMENTS\n{_format_segments(seg_inputs)}"
     )
 
+    # GPT-5 models reject a non-default temperature
+    extra = {} if model.startswith("gpt-5") else {"temperature": 0}
     resp = client.responses.parse(
-        model="gpt-4o-mini",
+        model=model,
         input=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0,
         text_format=LabelJudgment,
+        **extra,
     )
 
     return resp.output_parsed.results
@@ -75,6 +77,7 @@ def process_label_batch(
     batch: List[Dict],
     blob_name: str,
     batch_idx: int,
+    model: str = "gpt-4o-mini",
 ) -> Optional[Dict[str, Dict]]:
     """Judge one label against one batch of segments, retrying with backoff.
 
@@ -87,7 +90,7 @@ def process_label_batch(
 
     for attempt in range(4):
         try:
-            decisions = _call_gpt(label_def, seg_inputs)
+            decisions = _call_gpt(label_def, seg_inputs, model)
             result = {d.segment_id: {"applied": d.applied, "rationale": d.rationale} for d in decisions}
             missing = expected_ids - result.keys()
             if missing:
