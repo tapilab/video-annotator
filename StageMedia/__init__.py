@@ -26,6 +26,7 @@ import tempfile
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
+from email.message import Message
 from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import urlparse, parse_qs
@@ -37,7 +38,7 @@ from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPerm
 INPUT_CONTAINER = os.environ.get("INPUT_CONTAINER", "speech-input")
 
 
-def _download_youtube_audio(youtube_url: str, output_path: str) -> Tuple[Optional[str], Optional[str]]:
+def _download_youtube_audio(youtube_url: str, output_path: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Uses yt-dlp as a Python library rather than shelling out to it as a command -
     Azure's environment doesn't expose installed packages to a freshly spawned
@@ -50,11 +51,11 @@ def _download_youtube_audio(youtube_url: str, output_path: str) -> Tuple[Optiona
     rather than guessing whether some other format would transcribe correctly.
     """
     if not youtube_url or not youtube_url.strip():
-        return None, "YouTube URL is empty"
+        return None, "YouTube URL is empty", None
     try:
         import yt_dlp
     except ImportError as e:
-        return None, f"yt-dlp not available ({type(e).__name__}: {e})"
+        return None, f"yt-dlp not available ({type(e).__name__}: {e})", None
 
     base = output_path.rsplit(".", 1)[0]
     ydl_opts = {
@@ -68,17 +69,17 @@ def _download_youtube_audio(youtube_url: str, output_path: str) -> Tuple[Optiona
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([youtube_url.strip()])
+            info = ydl.extract_info(youtube_url.strip(), download=True)
     except Exception as e:
-        return None, f"yt-dlp failed: {type(e).__name__}: {e}"
+        return None, f"yt-dlp failed: {type(e).__name__}: {e}", None
 
     final_path = f"{base}.m4a"
     if os.path.exists(final_path):
-        return final_path, None
-    return None, "Download completed but no m4a audio stream was found for this video"
+        return final_path, None, (info or {}).get("title")
+    return None, "Download completed but no m4a audio stream was found for this video", None
 
 
-def _download_box_audio(box_url: str, output_path: str) -> Tuple[Optional[str], Optional[str]]:
+def _download_box_audio(box_url: str, output_path: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Download audio from a Box shared file URL.
 
@@ -88,7 +89,7 @@ def _download_box_audio(box_url: str, output_path: str) -> Tuple[Optional[str], 
       - /shared/static/{hash}  direct links  -> use as-is
     """
     if not box_url or not box_url.strip():
-        return None, "Box URL is empty"
+        return None, "Box URL is empty", None
 
     try:
         parsed = urlparse(box_url.strip())
@@ -179,7 +180,9 @@ def _download_box_audio(box_url: str, output_path: str) -> Tuple[Optional[str], 
                                 f.write(chunk)
 
                     if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-                        return final_path, None
+                        msg = Message()
+                        msg["Content-Disposition"] = disposition
+                        return final_path, None, msg.get_filename()
 
                     last_error = "Downloaded file is empty or missing"
 
@@ -191,10 +194,10 @@ def _download_box_audio(box_url: str, output_path: str) -> Tuple[Optional[str], 
             f"Could not download the Box file automatically ({last_error}). "
             "Try opening the Box link, clicking Download, and using the resulting "
             "shared/static/... URL instead."
-        )
+        ), None
 
     except Exception as e:
-        return None, f"Box download error: {str(e)}"
+        return None, f"Box download error: {str(e)}", None
 
 
 def _upload_to_blob(file_bytes: bytes, blob_name: str) -> str:
@@ -253,7 +256,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         mimetype="application/json", status_code=400,
                     )
                 output_path = f"{tmpdir}/{video_id}.m4a"
-                downloaded_path, error = _download_youtube_audio(url, output_path)
+                downloaded_path, error, video_name = _download_youtube_audio(url, output_path)
                 if error:
                     return func.HttpResponse(
                         json.dumps({"error": f"YouTube download failed: {error}"}),
@@ -271,7 +274,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         mimetype="application/json", status_code=400,
                     )
                 output_path = f"{tmpdir}/{video_id}.m4a"
-                downloaded_path, error = _download_box_audio(url, output_path)
+                downloaded_path, error, video_name = _download_box_audio(url, output_path)
                 if error:
                     return func.HttpResponse(
                         json.dumps({"error": f"Box download failed: {error}"}),
@@ -289,6 +292,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         mimetype="application/json", status_code=400,
                     )
                 filename = req.params.get("filename", "upload.m4a")
+                video_name = filename
                 suffix = Path(filename).suffix or ".m4a"
                 blob_name = f"upload_{video_id}_{int(time.time())}{suffix}"
 
@@ -301,7 +305,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             media_url = _upload_to_blob(file_bytes, blob_name)
 
         return func.HttpResponse(
-            json.dumps({"media_url": media_url, "video_id": video_id, "source_type": source_type}),
+            json.dumps({"media_url": media_url, "video_id": video_id, "source_type": source_type, "video_name": video_name}),
             mimetype="application/json",
             status_code=200,
         )

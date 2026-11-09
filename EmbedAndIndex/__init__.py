@@ -122,6 +122,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=400,
             )
 
+        video_name = (body.get("video_name") or "").strip()
+
         container, blob_name = segments_blob.split("/", 1)
         payload = _read_json_blob(container, blob_name)
 
@@ -170,6 +172,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             }
             if seg_id in embeddings_map:
                 doc["embedding"] = embeddings_map[seg_id]
+            if video_name:
+                doc["video_name"] = video_name
 
             docs_to_send.append(doc)
 
