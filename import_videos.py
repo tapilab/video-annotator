@@ -82,7 +82,7 @@ def main():
             "auto_segment": True,
             "segment_ms": 30000,
         })
-        state[vid] = {"job_url": resp["job_url"], "status": "submitted", "media_url": item["media_url"]}
+        state[vid] = {"job_url": resp["job_url"], "status": "submitted", "media_url": item["media_url"], "video_name": item.get("video_name")}
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
 
@@ -114,6 +114,7 @@ def main():
                     "segments_blob": segments_blob,
                     "source_url": state[vid]["media_url"],
                     "source_type": "box",
+                    "video_name": state[vid].get("video_name"),
                 }, timeout=180)
                 state[vid]["status"] = "indexed"
                 state[vid]["index_result"] = idx
