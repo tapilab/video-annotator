@@ -154,8 +154,9 @@ def render_hit(hit_idx: int, i: int, h: dict, label_by_name: dict) -> None:
 
     # Expander header
     ts_range    = f"{ms_to_ts(start_ms)} → {ms_to_ts(end_ms)}"
-    display_vid = vid if len(vid) < 28 else f"{vid[:25]}..."
-    score_str   = (f"  |  relevance={score:.3f}" if isinstance(score, (int, float))
+    video_name  = h.get("video_name") or vid
+    display_vid = video_name if len(video_name) <= 60 else f"{video_name[:57]}..."
+    score_str  = (f"  |  relevance={score:.3f}" if isinstance(score, (int, float))
                    else f"  |  relevance={score}") if score is not None else ""
     seg_str     = f"  |  seg={seg}" if seg else ""
     header      = f"{i}. [{ts_range}]  {display_vid}{seg_str}{score_str}"
@@ -163,6 +164,7 @@ def render_hit(hit_idx: int, i: int, h: dict, label_by_name: dict) -> None:
     with st.expander(header, expanded=(i <= 3)):
 
         # ── Segment text ──────────────────────────────────────────────────
+        st.caption(f"Video ID: {vid}")
         st.write(h.get("text", ""))
 
         # ── Labels / rationale ───────────────────────────────────────────

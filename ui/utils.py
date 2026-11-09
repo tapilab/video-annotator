@@ -161,7 +161,7 @@ def get_stored_videos(
         while True:
             payload = {
                 "search": "*",
-                "select": "video_id,source_url,source_type,processed_at",
+                "select": "video_id,video_name,source_url,source_type,processed_at",
                 "top": batch_size,
                 "skip": skip,
                 "count": True,
@@ -185,6 +185,7 @@ def get_stored_videos(
                         source_url = ''
                     all_videos[vid] = {
                         'video_id':     vid,
+                        'video_name':   doc.get('video_name') or '',
                         'source_type':  doc.get('source_type') or 'unknown',
                         'source_url':   source_url,
                         'processed_at': doc.get('processed_at', 'unknown'),

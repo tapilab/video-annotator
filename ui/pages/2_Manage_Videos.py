@@ -167,8 +167,8 @@ with tab_browse:
                     col_info, col_relabel, col_del = st.columns([4, 1, 1])
 
                     with col_info:
-                        st.write(f"**{i}. {vid}**")
-                        st.caption(f"Processed: {processed}")
+                        st.write(f"**{i}. {video.get('video_name') or vid}**")
+                        st.caption(f"Video ID: {vid}  |  Processed: {processed}")
                         if src_url:
                             display_url = (src_url[:80] + "...") if len(src_url) > 80 else src_url
                             st.code(display_url)
@@ -260,6 +260,7 @@ with tab_pending:
                                     "segments_blob": segments_blob,
                                     "source_url": info["source_url"],
                                     "source_type": info["source_type"],
+                                    "video_name": info.get("video_name"),
                                 },
                                 timeout=180,
                             )
