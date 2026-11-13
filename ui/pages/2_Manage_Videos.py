@@ -13,6 +13,7 @@ from utils import (
     SEARCH_ENDPOINT,
     SEARCH_ADMIN_KEY,
     get_stored_videos,
+    filter_videos,
     delete_video_by_id,
     get_pending_uploads,
     save_pending_uploads,
@@ -90,27 +91,21 @@ tab_browse, tab_pending = st.tabs(["Browse & Manage", pending_tab_label])
 # ---------------------------------------------------------------------------
 with tab_browse:
     st.subheader("Search Videos")
-    filter_video_id = st.text_input("Search by Video ID")
+    filter_text = st.text_input("Filter by Video", value="", placeholder="Video Name or ID")
 
-    load_clicked = st.button("Submit", type="primary")
+    refresh_clicked = st.button("Refresh list", type="primary")
 
     # Auto-load every video the first time this tab is visited, so there's
     # already something to look through instead of an empty page.
-    if load_clicked or not st.session_state.get('videos_loaded'):
+    if refresh_clicked or not st.session_state.get('videos_loaded'):
         with st.spinner("Retrieving videos..."):
-            videos = get_stored_videos(
-                video_id=filter_video_id.strip() or None,
-                source_type=None,
-                limit=1000,
-            )
-
-            st.session_state.stored_videos_cache = videos
-            if load_clicked and not videos:
-                st.warning("No videos found matching that filter.")
+            st.session_state.stored_videos_cache = get_stored_videos(source_type=None, limit=1000)
             st.session_state.videos_loaded = True
 
     if st.session_state.get('stored_videos_cache'):
-        videos = st.session_state.stored_videos_cache
+        videos = filter_videos(st.session_state.stored_videos_cache, filter_text)
+        if not videos:
+            st.warning("No videos match that name or ID.")
 
         if st.session_state.get('delete_success'):
             st.success("✅ Video deleted successfully")
