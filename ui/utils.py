@@ -28,7 +28,7 @@ __all__ = [
     "SEARCH_ENDPOINT", "SEARCH_ADMIN_KEY", "SEARCH_INDEX_NAME",
     "AZURE_STORAGE_ACCOUNT", "AZURE_STORAGE_KEY", "PENDING_CONTAINER",
     "ms_to_ts", "ms_to_seconds", "detect_url_type", "format_timestamp", "elapsed_since",
-    "get_stored_videos", "delete_video_by_id",
+    "get_stored_videos", "filter_videos", "delete_video_by_id",
     "generate_video_id", "get_box_audio_url", "fetch_box_audio_bytes",
     "build_video_link", "get_pending_uploads", "save_pending_uploads",
 ]
@@ -161,7 +161,7 @@ def get_stored_videos(
         while True:
             payload = {
                 "search": "*",
-                "select": "video_id,source_url,source_type,processed_at",
+                "select": "video_id,video_name,source_url,source_type,processed_at",
                 "top": batch_size,
                 "skip": skip,
                 "count": True,
@@ -185,6 +185,7 @@ def get_stored_videos(
                         source_url = ''
                     all_videos[vid] = {
                         'video_id':     vid,
+                        'video_name':   doc.get('video_name') or '',
                         'source_type':  doc.get('source_type') or 'unknown',
                         'source_url':   source_url,
                         'processed_at': doc.get('processed_at', 'unknown'),
@@ -197,6 +198,18 @@ def get_stored_videos(
         print(f"get_stored_videos failed: {e}")
         st.error("Couldn't retrieve videos right now — the search service didn't respond. Please try again in a moment.")
         return []
+
+
+def filter_videos(videos: List[Dict], text: str) -> List[Dict]:
+    """Keep videos whose ID or name contains text, ignoring case."""
+    needle = (text or "").strip().casefold()
+    if not needle:
+        return videos
+    return [
+        v for v in videos
+        if needle in (v.get("video_id") or "").casefold()
+        or needle in (v.get("video_name") or "").casefold()
+    ]
 
 
 def delete_video_by_id(video_id: str) -> bool:

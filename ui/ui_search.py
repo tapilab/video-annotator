@@ -12,7 +12,10 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, Tuple, List
 from dotenv import load_dotenv
 
-from utils import ms_to_ts, SEARCH_FN_URL, build_video_link, get_box_audio_url, fetch_box_audio_bytes
+from utils import (
+    ms_to_ts, SEARCH_FN_URL, build_video_link, get_box_audio_url, fetch_box_audio_bytes,
+    get_stored_videos, filter_videos,
+)
 
 load_dotenv()
 MANAGE_LABELS_URL = os.environ.get("MANAGE_LABELS_URL", "")
@@ -56,6 +59,11 @@ def get_labels() -> list:
 
 def get_label_names() -> list:
     return [l["name"] for l in get_labels()]
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def get_videos() -> list:
+    return get_stored_videos()
 
 
 @st.cache_resource(max_entries=20, ttl=3600, show_spinner=False)
@@ -154,8 +162,9 @@ def render_hit(hit_idx: int, i: int, h: dict, label_by_name: dict) -> None:
 
     # Expander header
     ts_range    = f"{ms_to_ts(start_ms)} → {ms_to_ts(end_ms)}"
-    display_vid = vid if len(vid) < 28 else f"{vid[:25]}..."
-    score_str   = (f"  |  relevance={score:.3f}" if isinstance(score, (int, float))
+    video_name  = h.get("video_name") or vid
+    display_vid = video_name if len(video_name) <= 60 else f"{video_name[:57]}..."
+    score_str  = (f"  |  relevance={score:.3f}" if isinstance(score, (int, float))
                    else f"  |  relevance={score}") if score is not None else ""
     seg_str     = f"  |  seg={seg}" if seg else ""
     header      = f"{i}. [{ts_range}]  {display_vid}{seg_str}{score_str}"
@@ -163,6 +172,7 @@ def render_hit(hit_idx: int, i: int, h: dict, label_by_name: dict) -> None:
     with st.expander(header, expanded=(i <= 3)):
 
         # ── Segment text ──────────────────────────────────────────────────
+        st.caption(f"Video ID: {vid}")
         st.write(h.get("text", ""))
 
         # ── Labels / rationale ───────────────────────────────────────────
@@ -371,7 +381,7 @@ def _render_how_to_use() -> None:
             2. **Check on progress**: Use **Manage Videos** → **Pending Uploads** to see which videos are still transcribing, and **Browse & Manage** to view, delete, or export videos that are already done.
             3. **Create labels**: In **Label Management**, define your own labels (for example, vaccine skepticism or trust messaging), with an optional description and example passages. Adding or editing a label automatically queues it to be applied to every video's segments.
             4. **Check labeling accuracy** (optional): **Label Evaluation** is a separate tool for testing how well the AI's labeling matches your own judgment — upload a CSV of text you've manually labeled yourself, and it reports precision/recall/F1 per label.
-            5. **Search and filter**: Return here to search by keyword, then optionally narrow results to one `video_id` or filter by predicted labels.
+            5. **Search and filter**: Return here to search by keyword, then optionally narrow results by video name or ID or filter by predicted labels.
             6. **Inspect evidence**: Expand any result card to read the excerpt, review the AI's rationale for each applied label, and jump directly to the right timestamp in the original video.
 
             **Tips**
@@ -389,7 +399,7 @@ def render_search_page() -> None:
     with st.sidebar:
         st.header("Search Settings")
         mode = st.selectbox("Mode", ["keyword", "hybrid", "vector"], index=1)
-        video_id_filter = st.text_input("Search by video_id", value="")
+        video_filter = st.text_input("Filter by Video", value="", placeholder="Video Name or ID")
         label_names = get_label_names()
         selected_labels = st.multiselect("Filter by labels", label_names)
         if selected_labels:
@@ -402,15 +412,22 @@ def render_search_page() -> None:
 
     q  = st.text_input("Query", value="", placeholder="e.g., measles misinformation")
     go = st.button("Search", type="primary", disabled=(not q.strip() and not selected_labels))
-    if video_id_filter.strip() and not q.strip() and not selected_labels:
+    if video_filter.strip() and not q.strip() and not selected_labels:
         st.caption("Add a keyword or select a label to search.")
 
     if go:
         params = {"q": q.strip(), "mode": mode, "top": PAGE_SIZE}
         if mode in ("hybrid", "vector"):
             params["k"] = None
-        if video_id_filter.strip():
-            params["video_id"] = video_id_filter.strip()
+        if video_filter.strip():
+            videos = get_videos()
+            if not videos:
+                get_videos.clear()
+            matches = filter_videos(videos, video_filter)
+            if not matches:
+                st.warning("No videos match that name or ID.")
+                return
+            params["video_ids"] = [v["video_id"] for v in matches]
         if selected_labels:
             params["labels"] = selected_labels
             params["label_match"] = label_match

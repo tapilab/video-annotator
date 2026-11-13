@@ -4,7 +4,7 @@ SearchSegments - Azure Function for Searching Indexed Video Segments
 This Azure Function provides search capabilities over indexed video segments:
 1. Supports three search modes: keyword, vector, or hybrid (keyword + vector)
 2. Embeds query text using Azure OpenAI for vector/hybrid modes
-3. Queries Azure AI Search index with optional filters (video_id, time range)
+3. Queries Azure AI Search index with optional filters (video IDs, time range)
 4. Returns ranked results with segment metadata
 
 Architecture Role:
@@ -17,7 +17,7 @@ Input: POST with:
   - mode: "keyword", "vector", or "hybrid" (default: "keyword")
   - top: Number of results to return (1-50)
   - k: Vector recall depth for vector/hybrid modes
-  - video_id, start_ms, end_ms: Optional filters
+  - video_ids (list) or video_id, start_ms, end_ms: Optional filters
 
 Output: JSON with search mode, total count, and ranked hits array
 """
@@ -38,15 +38,16 @@ def _escape_odata_string(value: str) -> str:
 
 
 def _build_filter(
-    video_id: Optional[str],
+    video_ids: Optional[List[str]],
     start_ms: Optional[int],
     end_ms: Optional[int],
     labels: Optional[List[str]] = None,
     label_match: str = "any",
 ) -> Optional[str]:
     clauses = ["video_id ne null"]
-    if video_id:
-        clauses.append(f"video_id eq '{_escape_odata_string(video_id)}'")
+    if video_ids:
+        joined = ",".join(_escape_odata_string(v) for v in video_ids)
+        clauses.append(f"search.in(video_id, '{joined}', ',')")
     if start_ms is not None:
         clauses.append(f"start_ms ge {int(start_ms)}")
     if end_ms is not None:
@@ -105,7 +106,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         k = int(body.get("k", max(20, top * 4)))
         k = max(top, min(k, 200))
 
-        video_id = body.get("video_id")
+        video_ids = body.get("video_ids") or ([body["video_id"]] if body.get("video_id") else [])
         start_ms = body.get("start_ms")
         end_ms = body.get("end_ms")
 
@@ -124,14 +125,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "top": top,
             "skip": skip,
             "count": True,
-            "select": "segment_key,video_id,segment_id,start_ms,end_ms,text,pred_labels,pred_label_details,manual_label_details,source_url,source_type",
+            "select": "segment_key,video_id,video_name,segment_id,start_ms,end_ms,text,pred_labels,pred_label_details,manual_label_details,source_url,source_type",
         }
 
         # Deterministic ordering when there's no relevance signal from a query
         if not q:
             payload["orderby"] = "video_id asc, start_ms asc"
 
-        odata_filter = _build_filter(video_id, start_ms, end_ms, labels, label_match)
+        odata_filter = _build_filter(video_ids, start_ms, end_ms, labels, label_match)
         if odata_filter:
             payload["filter"] = odata_filter
 
@@ -182,6 +183,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             hits.append({
                 "segment_key": item.get("segment_key"),
                 "video_id": item.get("video_id"),
+                "video_name": item.get("video_name"),
                 "segment_id": item.get("segment_id"),
                 "start_ms": item.get("start_ms"),
                 "end_ms": item.get("end_ms"),
