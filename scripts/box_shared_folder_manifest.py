@@ -197,7 +197,7 @@ def main():
                     continue
 
                 media_url = file_link
-                f.write(json.dumps({"video_id": video_id, "media_url": media_url}) + "\n")
+                f.write(json.dumps({"video_id": video_id, "media_url": media_url, "video_name": name}) + "\n")
                 f.flush()  # Ensure write is saved immediately
                 out_count += 1
                 new_files += 1

@@ -13,6 +13,7 @@ import pandas as pd
 import io
 import os
 from datetime import datetime, timezone
+from urllib.parse import unquote
 import requests
 from utils import (
     AZURE_STORAGE_KEY,
@@ -49,7 +50,7 @@ def _error_from_response(r: requests.Response) -> str:
 
 def stage_media(source_type: str, video_id: str, url: str = None,
                  file_bytes: bytes = None, filename: str = None):
-    """Get the media into storage and back a URL the transcription backend can read."""
+    """Get the media into storage. Returns (media_url, video_name, error)."""
     try:
         if source_type in ("youtube", "box"):
             r = requests.post(
@@ -65,14 +66,15 @@ def stage_media(source_type: str, video_id: str, url: str = None,
                 timeout=600,
             )
         else:
-            return None, f"Unknown source_type for staging: {source_type}"
+            return None, None, f"Unknown source_type for staging: {source_type}"
 
         if r.status_code >= 400:
-            return None, _error_from_response(r)
-        return r.json().get("media_url"), None
+            return None, None, _error_from_response(r)
+        data = r.json()
+        return data.get("media_url"), data.get("video_name"), None
     except Exception as e:
         print(f"stage_media failed for {video_id}: {e}")
-        return None, "Could not reach the staging service. Please try again in a moment."
+        return None, None, "Could not reach the staging service. Please try again in a moment."
 
 
 def submit_transcription(media_url: str, video_id: str):
@@ -101,9 +103,10 @@ def submit_video(source_type: str, source_url: str, video_id: str,
     """
     if source_type == "direct":
         media_url = source_url
+        video_name = unquote(source_url.split("?")[0].rsplit("/", 1)[-1]) or None
     else:
-        media_url, error = stage_media(source_type, video_id, url=source_url,
-                                        file_bytes=file_bytes, filename=filename)
+        media_url, video_name, error = stage_media(source_type, video_id, url=source_url,
+                                                   file_bytes=file_bytes, filename=filename)
         if error:
             return video_id, f"Staging failed: {error}"
 
@@ -116,6 +119,7 @@ def submit_video(source_type: str, source_url: str, video_id: str,
         "job_url": job_url,
         "source_url": source_url,
         "source_type": source_type,
+        "video_name": video_name,
         "submitted_at": datetime.now(timezone.utc).isoformat(),
     }
     save_pending_uploads(pending)
